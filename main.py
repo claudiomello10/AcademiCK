@@ -35,8 +35,8 @@ def main():
 
     helper = StudentHelper(
         data_path=os.getenv("DATA_PATH", "data/embeddings.pkl"),
-        model=os.getenv("DEFAULT_MODEL", "gpt-4o-mini"),
-        rag_model=os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-4o-mini"),
+        model=os.getenv("DEFAULT_MODEL", "gpt-5-mini"),
+        rag_model=os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-5-nano"),
         subject=os.getenv("DEFAULT_SUBJECT", "Machine Learning"),
         embedding_model_name=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
         device=os.getenv("DEVICE"),
@@ -44,7 +44,7 @@ def main():
 
     processor = PDFProcessor(
         embedding_model=helper.embedding_model,
-        llm_model=os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-4o-mini"),
+        llm_model=os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-5-nano"),
     )
 
     print("\nReady!\n")

@@ -31,8 +31,8 @@ class StudentHelper:
     def __init__(
         self,
         data_path: str = "data/embeddings.pkl",
-        model: str = "gpt-4o-mini",
-        rag_model: str = "gpt-4o-mini",
+        model: str = "gpt-5-mini",
+        rag_model: str = "gpt-5-nano",
         subject: str = "Machine Learning",
         embedding_model_name: str = "BAAI/bge-m3",
         device: str = None,

@@ -20,7 +20,7 @@ from llm_provider import generate_response
 class PDFProcessor:
     """Processes PDFs into chunked text with embeddings."""
 
-    def __init__(self, embedding_model, llm_model: str = "gpt-4o-mini"):
+    def __init__(self, embedding_model, llm_model: str = "gpt-5-mini"):
         """
         Args:
             embedding_model: Already-loaded BGEM3FlagModel instance (shared with StudentHelper)
