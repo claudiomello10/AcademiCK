@@ -5,6 +5,7 @@ services:
   # INFRASTRUCTURE SERVICES
   # ===========================================
 
+  # Access via: docker compose exec postgres psql -U academick -d academick
   postgres:
     image: postgres:16-alpine
     container_name: academick-postgres
@@ -15,8 +16,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-academick}"]
       interval: 10s
@@ -26,14 +25,13 @@ services:
       - academick-network
     restart: unless-stopped
 
+  # Access via: docker compose exec redis redis-cli
   redis:
     image: redis:7-alpine
     container_name: academick-redis
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -43,6 +41,7 @@ services:
       - academick-network
     restart: unless-stopped
 
+  # Access via: docker compose exec qdrant wget -qO- http://localhost:6333/collections
   qdrant:
     image: qdrant/qdrant:v1.12.4
     container_name: academick-qdrant
@@ -52,9 +51,6 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
       - ./data/qdrant_snapshots:/qdrant/snapshots
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     healthcheck:
       test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 10s
@@ -80,8 +76,6 @@ services:
       - MODEL_NAME=BAAI/bge-m3
     volumes:
       - model_cache:/root/.cache/huggingface
-    ports:
-      - "8002:8002"
     deploy:
       resources:
         reservations:
@@ -109,8 +103,6 @@ services:
       - MODEL_NAME=claudiomello/AcademiCK-intent-classifier
     volumes:
       - model_cache:/root/.cache/huggingface
-    ports:
-      - "8001:8001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -150,8 +142,6 @@ services:
       - ENABLE_PDF_UPLOAD=${ENABLE_PDF_UPLOAD:-true}
     volumes:
       - ./data/qdrant_snapshots:/app/snapshots
-    ports:
-      - "8000:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -189,8 +179,6 @@ services:
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed
-    ports:
-      - "8003:8003"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s
@@ -248,10 +236,8 @@ services:
       context: .
       dockerfile: services/frontend/Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost}
     container_name: academick-frontend
-    ports:
-      - "3000:3000"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
       interval: 30s
@@ -267,6 +253,9 @@ services:
   # ===========================================
   # REVERSE PROXY / LOAD BALANCER
   # ===========================================
+  # Only nginx exposes ports to the host. All other services communicate
+  # via Docker DNS on the internal academick-network.
+  # For debugging internal services, use: docker compose exec <service> <command>
 
   nginx:
     image: nginx:alpine
