@@ -60,8 +60,8 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/claudiomello10/TCC-RAG.git
-cd TCC-RAG
+git clone https://github.com/claudiomello10/Academick.git
+cd Academick
 
 cp .env.example .env
 ```

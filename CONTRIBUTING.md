@@ -17,8 +17,8 @@ Thank you for your interest in contributing to AcademiCK! Whether it's reporting
 1. **Fork** the repository on GitHub
 2. **Clone** your fork locally:
    ```bash
-   git clone https://github.com/your-username/TCC-RAG.git
-   cd TCC-RAG
+   git clone https://github.com/your-username/Academick.git
+   cd Academick
    ```
 3. **Create a branch** for your changes:
    ```bash
@@ -96,7 +96,7 @@ docker compose up -d
 ## Project Structure
 
 ```
-TCC-RAG/
+Academick/
 ├── services/                   # Backend microservices
 │   ├── api-gateway/            # Main FastAPI application (RAG pipeline, auth, admin)
 │   ├── embedding-service/      # BGE-M3 embedding model server
@@ -133,13 +133,13 @@ TCC-RAG/
 
 ### Reporting Bugs
 
-- Use the [Bug Report](https://github.com/claudiomello10/TCC-RAG/issues/new?template=bug_report.md) issue template
+- Use the [Bug Report](https://github.com/claudiomello10/Academick/issues/new?template=bug_report.md) issue template
 - Include steps to reproduce, expected vs actual behavior, and environment details
 - Attach relevant logs (`docker compose logs <service-name>`)
 
 ### Suggesting Features
 
-- Use the [Feature Request](https://github.com/claudiomello10/TCC-RAG/issues/new?template=feature_request.md) issue template
+- Use the [Feature Request](https://github.com/claudiomello10/Academick/issues/new?template=feature_request.md) issue template
 - Describe the problem your feature would solve
 - Consider how it fits into the existing architecture
 
@@ -152,7 +152,7 @@ Documentation improvements are always welcome! This includes:
 
 ### Writing Code
 
-1. Check existing [issues](https://github.com/claudiomello10/TCC-RAG/issues) for something to work on
+1. Check existing [issues](https://github.com/claudiomello10/Academick/issues) for something to work on
 2. Comment on the issue to let others know you're working on it
 3. Follow the [Pull Request Process](#pull-request-process) below
 
@@ -218,8 +218,8 @@ Before submitting, make sure:
 
 ## Getting Help
 
-- **Questions about the codebase?** Open a [Discussion](https://github.com/claudiomello10/TCC-RAG/discussions) or an issue
+- **Questions about the codebase?** Open a [Discussion](https://github.com/claudiomello10/Academick/discussions) or an issue
 - **Stuck on setup?** Check the [Usage Guide](docs/USAGE.md) for detailed instructions and troubleshooting
-- **Found a bug?** [Open an issue](https://github.com/claudiomello10/TCC-RAG/issues/new?template=bug_report.md)
+- **Found a bug?** [Open an issue](https://github.com/claudiomello10/Academick/issues/new?template=bug_report.md)
 
 Thank you for contributing!
