@@ -9,4 +9,5 @@ temp*
 !.gitignore
 *.snapshot
 *.checksum
-/data/qdrant_snapshots/
+data/
+books/
