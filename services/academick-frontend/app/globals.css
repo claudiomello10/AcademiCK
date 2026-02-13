@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 7%; /* Dark background */
+    --foreground: 0 0% 0%; /* Light text for dark background */
+    --card: 0 0% 0%; /* Slightly lighter than background for cards */
+    --card-foreground: 0 0% 0%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 99 94% 61%; /* Vibrant green accent */
+    --primary-foreground: 0 0% 0%; /* Black text on green */
+    --secondary: 0 0% 100%; /* White */
+    --secondary-foreground: 0 0% 95%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 70%;
+    --accent: 99 94% 61%; /* Green accent */
+    --accent-foreground: 0 0% 0%; /* Black on accent */
+    --destructive: 0 100% 40%; /* Red for destructive actions */
+    --destructive-foreground: 0 0% 95%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 99 94% 61%;
+    --radius: 0.5rem;
+    --chart-1: 99 94% 61%;
+    --chart-2: 111 90% 45%;
+    --chart-3: 111 95% 35%;
+    --chart-4: 111 85% 40%;
+    --chart-5: 111 80% 45%;
+  }
+}
+
+/* Adding some utility classes to use the theme colors */
+@layer utilities {
+  .bg-primary-custom {
+    @apply bg-primary text-primary-foreground;
+  }
+  
+  .border-primary-custom {
+    @apply border-primary;
+  }
+  
+  .text-primary-custom {
+    @apply text-primary;
+  }
+
+  .bg-dark-custom {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

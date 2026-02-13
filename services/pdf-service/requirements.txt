@@ -1,0 +1,37 @@
+# PDF Processing Service Requirements
+
+# Web Framework
+fastapi==0.115.12
+uvicorn==0.34.3
+pydantic==2.11.5
+pydantic-settings==2.7.1
+
+# Task Queue
+celery==5.4.0
+redis==5.2.1
+
+# Database
+asyncpg==0.30.0
+
+# Qdrant
+qdrant-client==1.12.1
+
+# HTTP Client
+httpx==0.28.1
+
+# PDF Processing
+PyMuPDF==1.26.0
+pypdf==5.6.0
+
+# Text Processing
+nltk==3.9.1
+langchain==0.3.25
+langchain-core==0.3.64
+langchain-text-splitters==0.3.8
+
+# LLM for TOC analysis
+openai==1.85.0
+
+# Utilities
+python-multipart==0.0.20
+aiofiles==24.1.0

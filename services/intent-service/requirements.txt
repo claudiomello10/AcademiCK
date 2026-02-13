@@ -1,0 +1,12 @@
+# Intent Classification Service Requirements
+fastapi==0.115.12
+uvicorn==0.34.3
+pydantic==2.11.5
+pydantic-settings==2.9.1
+
+# ML Libraries
+torch>=2.0.0
+transformers>=4.40.0
+
+# Utilities
+numpy>=2.0.0
