@@ -64,8 +64,8 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/claudiomello10/Academick.git
-cd Academick
+git clone https://github.com/claudiomello10/AcademiCK.git
+cd AcademiCK
 
 cp .env.example .env
 ```
