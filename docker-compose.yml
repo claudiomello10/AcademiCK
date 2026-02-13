@@ -11,7 +11,7 @@ services:
     container_name: academick-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-academick}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-academick_secure_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: ${POSTGRES_DB:-academick}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -29,9 +29,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: academick-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     environment:
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     volumes:
       - redis_data:/data
     healthcheck:
@@ -125,18 +125,18 @@ services:
       dockerfile: Dockerfile
     container_name: academick-api
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:-academick_secure_password}@postgres:5432/${POSTGRES_DB:-academick}
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - INTENT_SERVICE_URL=http://intent-service:8001
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
-      - SESSION_SECRET=${SESSION_SECRET:-change_this_in_production}
+      - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET must be set in .env}
       - SESSION_TTL_MINUTES=${SESSION_TTL_MINUTES:-30}
       - CONFIG_USERS_ENABLED=${CONFIG_USERS_ENABLED:-true}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin_secure_password}
-      - GUEST_PASSWORD=${GUEST_PASSWORD:-guest_password}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
+      - GUEST_PASSWORD=${GUEST_PASSWORD:?GUEST_PASSWORD must be set in .env}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
@@ -171,8 +171,8 @@ services:
       dockerfile: Dockerfile
     container_name: academick-pdf
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:-academick_secure_password}@postgres:5432/${POSTGRES_DB:-academick}
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
@@ -206,8 +206,8 @@ services:
     container_name: academick-pdf-worker
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:-academick_secure_password}@postgres:5432/${POSTGRES_DB:-academick}
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
