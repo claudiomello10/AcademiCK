@@ -7,6 +7,7 @@ WORKDIR /app
 # Install system dependencies for PDF processing
 RUN apt-get update && apt-get install -y \
     curl \
+    libmagic1 \
     libmupdf-dev \
     mupdf-tools \
     && rm -rf /var/lib/apt/lists/*

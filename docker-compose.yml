@@ -5,18 +5,17 @@ services:
   # INFRASTRUCTURE SERVICES
   # ===========================================
 
+  # Access via: docker compose exec postgres psql -U academick -d academick
   postgres:
     image: postgres:16-alpine
     container_name: academick-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-academick}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-academick_secure_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: ${POSTGRES_DB:-academick}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-academick}"]
       interval: 10s
@@ -26,16 +25,17 @@ services:
       - academick-network
     restart: unless-stopped
 
+  # Access via: docker compose exec redis redis-cli -a $REDIS_PASSWORD
   redis:
     image: redis:7-alpine
     container_name: academick-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a $REDIS_PASSWORD ping 2>/dev/null | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -43,6 +43,7 @@ services:
       - academick-network
     restart: unless-stopped
 
+  # Access via: docker compose exec qdrant wget -qO- http://localhost:6333/collections
   qdrant:
     image: qdrant/qdrant:v1.12.4
     container_name: academick-qdrant
@@ -52,9 +53,6 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
       - ./data/qdrant_snapshots:/qdrant/snapshots
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     healthcheck:
       test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 10s
@@ -80,8 +78,6 @@ services:
       - MODEL_NAME=BAAI/bge-m3
     volumes:
       - model_cache:/root/.cache/huggingface
-    ports:
-      - "8002:8002"
     deploy:
       resources:
         reservations:
@@ -109,8 +105,6 @@ services:
       - MODEL_NAME=claudiomello/AcademiCK-intent-classifier
     volumes:
       - model_cache:/root/.cache/huggingface
-    ports:
-      - "8001:8001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -131,27 +125,26 @@ services:
       dockerfile: Dockerfile
     container_name: academick-api
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:-academick_secure_password}@postgres:5432/${POSTGRES_DB:-academick}
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - INTENT_SERVICE_URL=http://intent-service:8001
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
-      - SESSION_SECRET=${SESSION_SECRET:-change_this_in_production}
+      - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET must be set in .env}
       - SESSION_TTL_MINUTES=${SESSION_TTL_MINUTES:-30}
       - CONFIG_USERS_ENABLED=${CONFIG_USERS_ENABLED:-true}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin_secure_password}
-      - GUEST_PASSWORD=${GUEST_PASSWORD:-guest_password}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
+      - GUEST_PASSWORD=${GUEST_PASSWORD:?GUEST_PASSWORD must be set in .env}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - ENABLE_SNAPSHOT_MANAGEMENT=${ENABLE_SNAPSHOT_MANAGEMENT:-true}
       - ENABLE_PDF_UPLOAD=${ENABLE_PDF_UPLOAD:-true}
+      - DOCS_ENABLED=${DOCS_ENABLED:-true}
     volumes:
       - ./data/qdrant_snapshots:/app/snapshots
-    ports:
-      - "8000:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -179,8 +172,8 @@ services:
       dockerfile: Dockerfile
     container_name: academick-pdf
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:-academick_secure_password}@postgres:5432/${POSTGRES_DB:-academick}
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
@@ -189,8 +182,6 @@ services:
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed
-    ports:
-      - "8003:8003"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s
@@ -216,8 +207,8 @@ services:
     container_name: academick-pdf-worker
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:-academick_secure_password}@postgres:5432/${POSTGRES_DB:-academick}
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
@@ -248,10 +239,8 @@ services:
       context: .
       dockerfile: services/frontend/Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost}
     container_name: academick-frontend
-    ports:
-      - "3000:3000"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
       interval: 30s
@@ -267,6 +256,9 @@ services:
   # ===========================================
   # REVERSE PROXY / LOAD BALANCER
   # ===========================================
+  # Only nginx exposes ports to the host. All other services communicate
+  # via Docker DNS on the internal academick-network.
+  # For debugging internal services, use: docker compose exec <service> <command>
 
   nginx:
     image: nginx:alpine

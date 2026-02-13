@@ -23,10 +23,10 @@ The system supports two authentication modes:
 ### Config Users (Default for Testing)
 
 Pre-configured users loaded from environment variables:
-- `guest` / `guest_password` - Regular user
-- `admin` / `admin_secure_password` - Admin access
+- `guest` / your `GUEST_PASSWORD` - Regular user
+- `admin` / your `ADMIN_PASSWORD` - Admin access
 
-These credentials can be changed in your `.env` file via `ADMIN_PASSWORD` and `GUEST_PASSWORD`.
+Set these passwords in your `.env` file. The system will not start without them.
 
 ### Database Users (Production)
 
@@ -36,14 +36,14 @@ Create users via the admin dashboard or directly in PostgreSQL with bcrypt-hashe
 
 ## API Usage
 
-The API documentation is also available interactively at `http://localhost:8000/docs` (Swagger UI).
+The API documentation is available interactively at `http://localhost/docs` (Swagger UI) when `DOCS_ENABLED=true`.
 
 ### Login
 
 ```bash
-curl -X POST http://localhost:8000/login \
+curl -X POST http://localhost/api/v1/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "guest", "password": "guest_password"}'
+  -d '{"username": "guest", "password": "your-guest-password"}'
 ```
 
 Response:
@@ -58,7 +58,7 @@ Response:
 ### Send a Query
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/chat/{session_id} \
+curl -X POST http://localhost/api/v1/chat/{session_id} \
   -H "Content-Type: application/json" \
   -d '{"query": "What is gradient descent?"}'
 ```
@@ -66,29 +66,29 @@ curl -X POST http://localhost:8000/api/v1/chat/{session_id} \
 ### List Available Books
 
 ```bash
-curl http://localhost:8000/api/v1/books
+curl http://localhost/api/v1/books
 ```
 
 ### Admin Endpoints
 
 ```bash
 # List processing jobs
-curl "http://localhost:8000/api/v1/admin/jobs?session_id={admin_session}"
+curl "http://localhost/api/v1/admin/jobs?session_id={admin_session}"
 
 # Get content stats
-curl "http://localhost:8000/api/v1/admin/content-stats?session_id={admin_session}"
+curl "http://localhost/api/v1/admin/content-stats?session_id={admin_session}"
 
 # Get book list with chunk counts
-curl "http://localhost:8000/api/v1/admin/book-list?session_id={admin_session}"
+curl "http://localhost/api/v1/admin/book-list?session_id={admin_session}"
 
 # Delete a book
-curl -X DELETE "http://localhost:8000/api/v1/admin/books/{book_name}?session_id={admin_session}"
+curl -X DELETE "http://localhost/api/v1/admin/books/{book_name}?session_id={admin_session}"
 
 # Dismiss a job from the list
-curl -X DELETE "http://localhost:8000/api/v1/admin/jobs/{job_id}?session_id={admin_session}"
+curl -X DELETE "http://localhost/api/v1/admin/jobs/{job_id}?session_id={admin_session}"
 
 # Get usage statistics
-curl "http://localhost:8000/api/v1/admin/usage-stats?range=week&session_id={admin_session}"
+curl "http://localhost/api/v1/admin/usage-stats?range=week&session_id={admin_session}"
 ```
 
 ---
@@ -97,8 +97,8 @@ curl "http://localhost:8000/api/v1/admin/usage-stats?range=week&session_id={admi
 
 ### Via Admin Dashboard (Recommended)
 
-1. Access the admin dashboard at http://localhost:3000/admin
-2. Login with admin credentials (`admin` / `admin_secure_password`)
+1. Access the admin dashboard at http://localhost/admin
+2. Login with your admin credentials (`admin` / your `ADMIN_PASSWORD`)
 3. Go to "Content Management" tab
 4. Click "Add New Content" to upload PDF files
 5. Monitor processing progress with real-time chapter tracking
@@ -107,13 +107,13 @@ curl "http://localhost:8000/api/v1/admin/usage-stats?range=week&session_id={admi
 
 ```bash
 # Upload and process PDF
-curl -X POST "http://localhost:8000/api/v1/admin/upload-pdfs?session_id={admin_session}" \
+curl -X POST "http://localhost/api/v1/admin/upload-pdfs?session_id={admin_session}" \
   -F "files=@your-book.pdf"
 ```
 
 Monitor job status:
 ```bash
-curl "http://localhost:8000/api/v1/admin/jobs?session_id={admin_session}"
+curl "http://localhost/api/v1/admin/jobs?session_id={admin_session}"
 ```
 
 ### PDF Processing Methods
@@ -146,7 +146,7 @@ The system uses a **dual-method processing approach**:
 
 ## Admin Dashboard
 
-Access at http://localhost:3000/admin with admin credentials.
+Access at http://localhost/admin with admin credentials.
 
 ### Content Management
 
@@ -227,31 +227,32 @@ python scripts/migrate_embeddings.py \
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEFAULT_SUBJECT` | Machine Learning | Default academic subject for new sessions |
-| `POSTGRES_USER` | academick | PostgreSQL username |
-| `POSTGRES_PASSWORD` | academick_secure_password | PostgreSQL password |
-| `POSTGRES_DB` | academick | Database name |
-| `REDIS_URL` | redis://redis:6379/0 | Redis connection URL |
-| `QDRANT_HOST` | qdrant | Qdrant hostname |
-| `QDRANT_PORT` | 6333 | Qdrant HTTP port |
-| `QDRANT_COLLECTION` | academick_embeddings | Qdrant collection name |
-| `OPENAI_API_KEY` | - | OpenAI API key |
-| `ANTHROPIC_API_KEY` | - | Anthropic API key |
-| `DEEPSEEK_API_KEY` | - | DeepSeek API key |
-| `DEFAULT_MODEL` | gpt-5-mini | Default LLM model |
-| `SESSION_TTL_MINUTES` | 30 | Session timeout |
-| `SESSION_SECRET` | (change this) | Session token encryption key |
-| `CONFIG_USERS_ENABLED` | true | Enable config users |
-| `ADMIN_PASSWORD` | admin_secure_password | Admin user password |
-| `GUEST_PASSWORD` | guest_password | Guest user password |
-| `EMBEDDING_DEVICE` | gpu | Device for embeddings (gpu/cpu) |
-| `EMBEDDING_BATCH_SIZE` | 16 | Embedding batch size |
-| `ENABLE_SNAPSHOT_MANAGEMENT` | true | Show snapshot management in admin |
-| `ENABLE_PDF_UPLOAD` | true | Show PDF upload in admin |
-| `NEXT_PUBLIC_API_URL` | http://localhost:8000 | API URL for frontend |
-| `NEXT_PUBLIC_DEFAULT_SUBJECT` | Machine Learning | Default subject in frontend |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `POSTGRES_PASSWORD` | **Yes** | - | PostgreSQL password |
+| `REDIS_PASSWORD` | **Yes** | - | Redis authentication password |
+| `SESSION_SECRET` | **Yes** | - | Session token encryption key |
+| `ADMIN_PASSWORD` | **Yes** | - | Admin user password |
+| `GUEST_PASSWORD` | **Yes** | - | Guest user password |
+| `OPENAI_API_KEY` | At least one | - | OpenAI API key |
+| `ANTHROPIC_API_KEY` | At least one | - | Anthropic API key |
+| `DEEPSEEK_API_KEY` | At least one | - | DeepSeek API key |
+| `DEFAULT_SUBJECT` | No | Machine Learning | Default academic subject for new sessions |
+| `POSTGRES_USER` | No | academick | PostgreSQL username |
+| `POSTGRES_DB` | No | academick | Database name |
+| `QDRANT_HOST` | No | qdrant | Qdrant hostname |
+| `QDRANT_PORT` | No | 6333 | Qdrant HTTP port |
+| `QDRANT_COLLECTION` | No | academick_embeddings | Qdrant collection name |
+| `DEFAULT_MODEL` | No | gpt-5-mini | Default LLM model |
+| `SESSION_TTL_MINUTES` | No | 30 | Session timeout |
+| `CONFIG_USERS_ENABLED` | No | true | Enable config users |
+| `DOCS_ENABLED` | No | true | Enable Swagger UI / ReDoc |
+| `EMBEDDING_DEVICE` | No | gpu | Device for embeddings (gpu/cpu) |
+| `EMBEDDING_BATCH_SIZE` | No | 16 | Embedding batch size |
+| `ENABLE_SNAPSHOT_MANAGEMENT` | No | true | Show snapshot management in admin |
+| `ENABLE_PDF_UPLOAD` | No | true | Show PDF upload in admin |
+| `NEXT_PUBLIC_API_URL` | No | http://localhost | API URL for frontend |
+| `NEXT_PUBLIC_DEFAULT_SUBJECT` | No | Machine Learning | Default subject in frontend |
 
 See [.env.example](../.env.example) for the full list with detailed descriptions and advanced options.
 

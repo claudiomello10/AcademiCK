@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     # Redis
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url: str = os.getenv("REDIS_URL", "redis://:change_this_redis_password@localhost:6379/0")
 
     # Qdrant
     qdrant_host: str = os.getenv("QDRANT_HOST", "localhost")
@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # Admin feature toggles
     enable_snapshot_management: bool = os.getenv("ENABLE_SNAPSHOT_MANAGEMENT", "true").lower() == "true"
     enable_pdf_upload: bool = os.getenv("ENABLE_PDF_UPLOAD", "true").lower() == "true"
+
+    # API documentation toggle
+    docs_enabled: bool = os.getenv("DOCS_ENABLED", "true").lower() == "true"
 
     # Snapshot storage directory (shared volume with Qdrant)
     snapshot_dir: str = os.getenv("SNAPSHOT_DIR", "/app/snapshots")

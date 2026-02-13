@@ -35,3 +35,6 @@ openai==1.85.0
 # Utilities
 python-multipart==0.0.20
 aiofiles==24.1.0
+
+# File type validation
+python-magic==0.4.27
