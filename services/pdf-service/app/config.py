@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "1000"))
     min_chunk_length: int = int(os.getenv("MIN_CHUNK_LENGTH", "300"))
 
+    # Upload limits
+    max_upload_size_mb: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "100"))
+
     # Upload directory - use /app/processed since /app/uploads is read-only (contains existing PDFs)
     upload_dir: str = os.getenv("UPLOAD_DIR", "/app/processed/uploads")
     processed_dir: str = os.getenv("PROCESSED_DIR", "/app/processed")
