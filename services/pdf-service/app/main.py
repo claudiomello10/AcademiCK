@@ -9,11 +9,14 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+import io
 import os
 import shutil
 from uuid import uuid4
 import logging
 import magic
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from app.config import settings
 from app.workers.celery_app import celery_app
@@ -116,6 +119,27 @@ async def upload_and_process(
         raise HTTPException(
             status_code=400,
             detail=f"Invalid file type: {mime_type}. Only PDF files are supported"
+        )
+
+    # Validate PDF structure — catches files with valid magic bytes but invalid content
+    try:
+        reader = PdfReader(io.BytesIO(contents))
+        if len(reader.pages) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid PDF: file contains no pages"
+            )
+    except HTTPException:
+        raise
+    except PdfReadError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid PDF structure: {e}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not verify PDF integrity: {e}"
         )
 
     # Generate unique filename
