@@ -222,17 +222,17 @@ const ContentManagement = () => {
     const handleDismissJob = async (jobId: string, filename: string) => {
         if (!sessionId) return;
 
+        // Frontend-only error jobs have no job_id — just remove from local state
+        if (!jobId) {
+            setProcessingJobs(prev => prev.filter(j => j.filename !== filename));
+            return;
+        }
+
         // Clear any pending auto-dismiss timer for this job
         const timer = autoDismissTimersRef.current.get(jobId);
         if (timer) {
             clearTimeout(timer);
             autoDismissTimersRef.current.delete(jobId);
-        }
-
-        // Frontend-only error jobs have no job_id — just remove from local state
-        if (!jobId) {
-            setProcessingJobs(prev => prev.filter(j => j.filename !== filename));
-            return;
         }
 
         try {
