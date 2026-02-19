@@ -134,7 +134,7 @@ const ContentManagement = () => {
                         .filter(job => job.status === 'completed')
                         .forEach(job => {
                             const timer = setTimeout(() => {
-                                handleDismissJob(job.job_id);
+                                handleDismissJob(job.job_id, job.filename);
                                 autoDismissTimersRef.current.delete(job.job_id);
                             }, 5000);
                             autoDismissTimersRef.current.set(job.job_id, timer);
@@ -219,8 +219,14 @@ const ContentManagement = () => {
         setFiles(prevFiles => prevFiles.filter((_, i) => i !== index));
     };
 
-    const handleDismissJob = async (jobId: string) => {
+    const handleDismissJob = async (jobId: string, filename: string) => {
         if (!sessionId) return;
+
+        // Frontend-only error jobs have no job_id — just remove from local state
+        if (!jobId) {
+            setProcessingJobs(prev => prev.filter(j => j.filename !== filename));
+            return;
+        }
 
         // Clear any pending auto-dismiss timer for this job
         const timer = autoDismissTimersRef.current.get(jobId);
@@ -699,7 +705,7 @@ const ContentManagement = () => {
                                                     variant="ghost"
                                                     size="icon"
                                                     className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                                                    onClick={() => handleDismissJob(job.job_id)}
+                                                    onClick={() => handleDismissJob(job.job_id, job.filename)}
                                                     title="Dismiss job"
                                                 >
                                                     <X className="h-4 w-4" />

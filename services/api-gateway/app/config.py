@@ -1,21 +1,40 @@
-"""API Gateway Configuration"""
+"""API Gateway Configuration
+
+Required environment variables (no defaults — the service will not start without them):
+  DATABASE_URL   — e.g. postgresql://user:pass@localhost:5432/academick
+  REDIS_URL      — e.g. redis://:password@localhost:6379/0
+  SESSION_SECRET — random string for session encryption
+  ADMIN_PASSWORD — admin user password
+  GUEST_PASSWORD — guest user password
+
+When using docker compose, these are set automatically from .env.
+When running standalone, export them in your shell before starting the service.
+"""
 
 import os
 from pydantic_settings import BaseSettings
 from typing import Optional
 
 
+def _require_env(name: str) -> str:
+    """Get a required environment variable or raise an error."""
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable '{name}' is not set. "
+            f"Set it in .env or export it before starting the service."
+        )
+    return value
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Database
-    database_url: str = os.getenv(
-        "DATABASE_URL",
-        "postgresql://academick:academick_secure_password@localhost:5432/academick"
-    )
+    database_url: str = _require_env("DATABASE_URL")
 
     # Redis
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url: str = _require_env("REDIS_URL")
 
     # Qdrant
     qdrant_host: str = os.getenv("QDRANT_HOST", "localhost")
@@ -31,13 +50,13 @@ class Settings(BaseSettings):
     )
 
     # Session configuration
-    session_secret: str = os.getenv("SESSION_SECRET", "change_this_in_production")
+    session_secret: str = _require_env("SESSION_SECRET")
     session_ttl_minutes: int = int(os.getenv("SESSION_TTL_MINUTES", "30"))
 
     # Config users for testing
     config_users_enabled: bool = os.getenv("CONFIG_USERS_ENABLED", "true").lower() == "true"
-    admin_password: str = os.getenv("ADMIN_PASSWORD", "admin_secure_password")
-    guest_password: str = os.getenv("GUEST_PASSWORD", "guest_password")
+    admin_password: str = _require_env("ADMIN_PASSWORD")
+    guest_password: str = _require_env("GUEST_PASSWORD")
 
     # LLM API Keys
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
@@ -56,6 +75,9 @@ class Settings(BaseSettings):
     # Admin feature toggles
     enable_snapshot_management: bool = os.getenv("ENABLE_SNAPSHOT_MANAGEMENT", "true").lower() == "true"
     enable_pdf_upload: bool = os.getenv("ENABLE_PDF_UPLOAD", "true").lower() == "true"
+
+    # API documentation toggle
+    docs_enabled: bool = os.getenv("DOCS_ENABLED", "true").lower() == "true"
 
     # Snapshot storage directory (shared volume with Qdrant)
     snapshot_dir: str = os.getenv("SNAPSHOT_DIR", "/app/snapshots")

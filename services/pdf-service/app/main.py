@@ -9,10 +9,14 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+import io
 import os
 import shutil
 from uuid import uuid4
 import logging
+import magic
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from app.config import settings
 from app.workers.celery_app import celery_app
@@ -93,13 +97,56 @@ async def upload_and_process(
 ):
     """
     Upload a PDF file and start processing.
+
+    Validates file extension, size, and MIME type before processing.
     """
-    if not file.filename.endswith('.pdf'):
+    # Check file extension and capture filename
+    if not file.filename or not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    original_filename = file.filename
+
+    # Read file content, then close the upload handle
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+    contents = await file.read()
+    await file.close()
+    if len(contents) > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {settings.max_upload_size_mb}MB"
+        )
+
+    # Validate MIME type using magic bytes
+    mime_type = magic.from_buffer(contents[:2048], mime=True)
+    if mime_type != "application/pdf":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type: {mime_type}. Only PDF files are supported"
+        )
+
+    # Validate PDF structure — catches files with valid magic bytes but invalid content
+    try:
+        reader = PdfReader(io.BytesIO(contents))
+        if len(reader.pages) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid PDF: file contains no pages"
+            )
+    except HTTPException:
+        raise
+    except PdfReadError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid PDF structure: {e}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not verify PDF integrity: {e}"
+        )
 
     # Generate unique filename
     file_id = str(uuid4())
-    filename = f"{file_id}_{file.filename}"
+    filename = f"{file_id}_{original_filename}"
     file_path = os.path.join(settings.upload_dir, filename)
 
     # Ensure upload directory exists
@@ -108,13 +155,13 @@ async def upload_and_process(
     # Save uploaded file
     try:
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(contents)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
     # Use filename as book name if not provided
     if not book_name:
-        book_name = os.path.splitext(file.filename)[0]
+        book_name = os.path.splitext(original_filename)[0]
 
     # Start processing
     from app.workers.tasks import process_pdf_task

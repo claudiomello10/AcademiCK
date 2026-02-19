@@ -113,7 +113,10 @@ app = FastAPI(
     title="AcademiCK API Gateway",
     description="RAG-powered educational assistant API",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
 # CORS middleware
@@ -136,8 +139,10 @@ app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
 @app.get("/")
 async def root():
     """Root endpoint."""
-    return {
+    response = {
         "service": "AcademiCK API Gateway",
         "version": "2.0.0",
-        "docs": "/docs"
     }
+    if settings.docs_enabled:
+        response["docs"] = "/docs"
+    return response

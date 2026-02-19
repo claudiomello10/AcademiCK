@@ -40,7 +40,6 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
    +--------v--------+   +--------v--------+   +--------v--------+
    |    Frontend     |   |   API Gateway   |   |   PDF Service   |
    |   (Next.js)     |   |   (FastAPI)     |   |   (FastAPI)     |
-   |   port: 3000    |   |   port: 8000    |   |   port: 8003    |
    +-----------------+   +--------+--------+   +-----------------+
                                   |
          +------------+-----------+-----------+------------+
@@ -48,9 +47,10 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 +--------v---+ +------v-----+ +---v------+ +--v-------+ +--v---------+
 |  Intent    | | Embedding  | |  Qdrant  | |  Redis   | | PostgreSQL |
 | Classifier | |  Service   | | Vectors  | |  Cache   | |  Database  |
-| port:8001  | | port:8002  | | port:6333| | port:6379| | port:5432  |
 +------------+ +------------+ +----------+ +----------+ +------------+
 ```
+
+> All internal services communicate over an isolated Docker network. Only nginx is exposed to the host.
 
 ## Quick Start
 
@@ -70,13 +70,18 @@ cd AcademiCK
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
-```env
-# Set at least one LLM provider API key
-OPENAI_API_KEY=sk-your-key-here
+Edit `.env` and set the required values:
 
-# Change the session secret
+```env
+# Required: Set all passwords (system won't start without them)
+POSTGRES_PASSWORD=your-secure-password
+REDIS_PASSWORD=your-secure-password
 SESSION_SECRET=your-secure-random-string
+ADMIN_PASSWORD=your-admin-password
+GUEST_PASSWORD=your-guest-password
+
+# Required: At least one LLM provider API key
+OPENAI_API_KEY=sk-your-key-here
 
 # (Optional) Change the default subject
 DEFAULT_SUBJECT=Machine Learning
@@ -91,74 +96,80 @@ docker compose up -d
 > **Note:** On the first run, the `intent-service` and `embedding-service` containers will take longer to start because they need to download their ML models (~1-2 GB). Subsequent starts will use the cached models.
 
 Wait for all services to become healthy:
+
 ```bash
 docker compose ps
 ```
 
 ### 3. Access the Application
 
-| URL | Description |
-|-----|-------------|
-| http://localhost:3000 | Web interface |
-| http://localhost:8000/docs | API documentation (Swagger) |
+| URL                    | Description   |
+| ---------------------- | ------------- |
+| http://localhost       | Web interface |
+| http://localhost/admin | Admin dashboard |
 
 ### 4. Login
 
-Use the default credentials:
-- **Guest**: `guest` / `guest_password`
-- **Admin**: `admin` / `admin_secure_password`
+Use the credentials you set in `.env`:
 
-> Change these passwords in `.env` before deploying to production.
+- **Guest**: `guest` / your `GUEST_PASSWORD`
+- **Admin**: `admin` / your `ADMIN_PASSWORD`
 
 ## Configuration
 
 Key settings in `.env` (see [.env.example](.env.example) for the full list):
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEFAULT_SUBJECT` | Machine Learning | Academic subject for the assistant |
-| `OPENAI_API_KEY` | - | OpenAI API key (at least one LLM key required) |
-| `ANTHROPIC_API_KEY` | - | Anthropic API key |
-| `DEEPSEEK_API_KEY` | - | DeepSeek API key |
-| `DEFAULT_MODEL` | gpt-5-mini | Default LLM model for responses |
-| `EMBEDDING_DEVICE` | gpu | Embedding inference device (`gpu` or `cpu`) |
-| `CONFIG_USERS_ENABLED` | true | Enable preset test users |
-| `SESSION_SECRET` | (change this) | Secret key for session encryption |
+| Variable              | Required     | Description                                        |
+| --------------------- | ------------ | -------------------------------------------------- |
+| `POSTGRES_PASSWORD` | Yes          | PostgreSQL password                                |
+| `REDIS_PASSWORD`    | Yes          | Redis authentication password                      |
+| `SESSION_SECRET`    | Yes          | Secret key for session encryption                  |
+| `ADMIN_PASSWORD`    | Yes          | Admin user password                                |
+| `GUEST_PASSWORD`    | Yes          | Guest user password                                |
+| `OPENAI_API_KEY`    | At least one | OpenAI API key                                     |
+| `ANTHROPIC_API_KEY` | At least one | Anthropic API key                                  |
+| `DEEPSEEK_API_KEY`  | At least one | DeepSeek API key                                   |
+| `DEFAULT_SUBJECT`   | No           | Academic subject (default: Machine Learning)       |
+| `DEFAULT_MODEL`     | No           | Default LLM model (default: gpt-5-mini)            |
+| `EMBEDDING_DEVICE`  | No           | Embedding device:`gpu` or `cpu` (default: gpu) |
+| `DOCS_ENABLED`      | No           | Enable Swagger UI (default: true)                  |
 
 ## Services
 
-| Service | Port | Description |
-|---------|------|-------------|
-| `nginx` | 80 | Reverse proxy |
-| `frontend` | 3000 | Next.js web interface |
-| `api-gateway` | 8000 | Main API + RAG orchestration |
-| `intent-service` | 8001 | Intent classification |
-| `embedding-service` | 8002 | BGE-M3 embeddings (GPU/CPU) |
-| `pdf-service` | 8003 | PDF processing |
-| `qdrant` | 6333 | Vector database |
-| `postgres` | 5432 | PostgreSQL database |
-| `redis` | 6379 | Cache and task queue |
+| Service               | Description                            |
+| --------------------- | -------------------------------------- |
+| `nginx`             | Reverse proxy (only exposed port: 80)  |
+| `frontend`          | Next.js web interface                  |
+| `api-gateway`       | Main API + RAG orchestration           |
+| `intent-service`    | Intent classification                  |
+| `embedding-service` | BGE-M3 embeddings (GPU/CPU)            |
+| `pdf-service`       | PDF processing                         |
+| `pdf-worker`        | Celery worker for async PDF processing |
+| `qdrant`            | Vector database                        |
+| `postgres`          | PostgreSQL database                    |
+| `redis`             | Cache and task queue                   |
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Usage Guide](docs/USAGE.md) | API examples, admin dashboard, PDF processing, troubleshooting |
-| [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process |
-| [.env.example](.env.example) | All configuration options with descriptions |
+| Document                     | Description                                                    |
+| ---------------------------- | -------------------------------------------------------------- |
+| [Usage Guide](docs/USAGE.md)    | API examples, admin dashboard, PDF processing, troubleshooting |
+| [Security Policy](SECURITY.md)  | Vulnerability reporting and deployment best practices          |
+| [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process                      |
+| [.env.example](.env.example)    | All configuration options with descriptions                    |
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| **Backend** | FastAPI, Python 3.11+ |
-| **Frontend** | Next.js 15, React 19, TailwindCSS, shadcn/ui |
-| **Vector DB** | Qdrant (hybrid dense + sparse search) |
-| **Database** | PostgreSQL 16 |
-| **Cache** | Redis 7 |
-| **Embeddings** | BGE-M3 (BAAI/bge-m3) |
-| **Task Queue** | Celery with Redis broker |
-| **Infrastructure** | Docker, Docker Compose, Nginx |
+| Layer                    | Technology                                   |
+| ------------------------ | -------------------------------------------- |
+| **Backend**        | FastAPI, Python 3.11+                        |
+| **Frontend**       | Next.js 15, React 19, TailwindCSS, shadcn/ui |
+| **Vector DB**      | Qdrant (hybrid dense + sparse search)        |
+| **Database**       | PostgreSQL 16                                |
+| **Cache**          | Redis 7                                      |
+| **Embeddings**     | BGE-M3 (BAAI/bge-m3)                         |
+| **Task Queue**     | Celery with Redis broker                     |
+| **Infrastructure** | Docker, Docker Compose, Nginx                |
 
 ## Contributing
 
