@@ -100,13 +100,15 @@ async def upload_and_process(
 
     Validates file extension, size, and MIME type before processing.
     """
-    # Check file extension
+    # Check file extension and capture filename
     if not file.filename or not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    original_filename = file.filename
 
-    # Read file content and check size
+    # Read file content, then close the upload handle
     max_size = settings.max_upload_size_mb * 1024 * 1024
     contents = await file.read()
+    await file.close()
     if len(contents) > max_size:
         raise HTTPException(
             status_code=413,
@@ -144,7 +146,7 @@ async def upload_and_process(
 
     # Generate unique filename
     file_id = str(uuid4())
-    filename = f"{file_id}_{file.filename}"
+    filename = f"{file_id}_{original_filename}"
     file_path = os.path.join(settings.upload_dir, filename)
 
     # Ensure upload directory exists
@@ -159,7 +161,7 @@ async def upload_and_process(
 
     # Use filename as book name if not provided
     if not book_name:
-        book_name = os.path.splitext(file.filename)[0]
+        book_name = os.path.splitext(original_filename)[0]
 
     # Start processing
     from app.workers.tasks import process_pdf_task
