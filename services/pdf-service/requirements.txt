@@ -38,3 +38,10 @@ aiofiles==24.1.0
 
 # File type validation
 python-magic==0.4.27
+
+# Docling for structure-aware PDF processing (fallback)
+docling==2.74.0
+
+# OCR engine for Docling (handles scanned/image-based PDFs)
+onnxruntime
+rapidocr-onnxruntime

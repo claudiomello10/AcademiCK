@@ -59,6 +59,90 @@ def process_pdf_task(self, file_path: str, book_name: str):
     return run_async(_process_pdf_async(self, file_path, book_name))
 
 
+async def _process_docling_sections(
+    sections, book_name, book_id, pool, chunker, task, fallback_reason
+):
+    """
+    Insert chapter records and chunk text for each Docling-extracted section.
+
+    Args:
+        sections: Output of DoclingPDFProcessor.process() — list of
+                  {chapter, topic, text, is_first_in_chapter} dicts.
+        book_name, book_id, pool, chunker, task, fallback_reason: as in caller.
+
+    Returns:
+        (all_chunks, chapter_ids, chapters_info) matching the existing fallback format.
+    """
+    from uuid import uuid4
+
+    # Group sections by chapter to create one DB chapter record per chapter title
+    chapter_order = []
+    chapters_by_title = {}
+    for section in sections:
+        title = section["chapter"]
+        if title not in chapters_by_title:
+            chapter_order.append(title)
+            chapters_by_title[title] = []
+        chapters_by_title[title].append(section)
+
+    total_chapters = len(chapter_order)
+    all_chunks = []
+    chapter_ids = {}
+    chapters_info = []
+
+    async with pool.acquire() as conn:
+        for i, chapter_title in enumerate(chapter_order):
+            chapter_id = str(uuid4())
+            chapter_ids[chapter_title] = chapter_id
+
+            await conn.execute("""
+                INSERT INTO chapters (id, book_id, title, chapter_number)
+                VALUES ($1, $2, $3, $4)
+            """, chapter_id, book_id, chapter_title, i + 1)
+
+            chapter_sections = chapters_by_title[chapter_title]
+            chapter_chunk_index = 0
+
+            for section in chapter_sections:
+                body_text = section["text"]
+                topic_override = section.get("topic", "")
+
+                raw_chunks = chunker.chunk_text(body_text, chapter_title)
+
+                for chunk in raw_chunks:
+                    # Use the Docling sub-heading as topic when available
+                    if topic_override and chunk_index_is_first(chunk, chapter_chunk_index):
+                        chunk["topic"] = topic_override
+                    chunk["chapter"] = chapter_title
+                    chunk["chapter_id"] = chapter_id
+                    chunk["book_id"] = book_id
+                    chunk["book_name"] = book_name
+                    # Mark first chunk of the whole chapter as introduction
+                    chunk["is_introduction"] = chapter_chunk_index == 0
+                    chunk["chunk_index"] = chapter_chunk_index
+                    all_chunks.append(chunk)
+                    chapter_chunk_index += 1
+
+            chapters_info.append({"title": chapter_title, "chapter_id": chapter_id})
+
+            progress = 10 + (i / max(total_chapters, 1)) * 30
+            task.update_state(state="PROCESSING", meta={
+                "progress": progress,
+                "stage": "chunking_docling",
+                "warning": f"Using Docling fallback: {fallback_reason}",
+                "chapters_total": total_chapters,
+                "chapters_processed": i,
+                "current_chapter": chapter_title
+            })
+
+    return all_chunks, chapter_ids, chapters_info
+
+
+def chunk_index_is_first(chunk: dict, chapter_chunk_index: int) -> bool:
+    """Return True for the first chunk of a section (used for topic assignment)."""
+    return chapter_chunk_index == 0 or chunk.get("chunk_index", 0) == 0
+
+
 async def _process_pdf_async(task, file_path: str, book_name: str):
     """Async implementation of PDF processing with dual-method support.
 
@@ -219,82 +303,110 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             fallback_reason = str(e)
             logger.warning(f"Original processing failed, using fallback: {e}")
 
-            # Fall back to programmatic processing
-            task.update_state(state="PROCESSING", meta={
-                "progress": 5,
-                "stage": "fallback_processing",
-                "warning": f"Using fallback processor: {fallback_reason}",
-                "chapters_total": 0,
-                "chapters_processed": 0
-            })
-
-            # Use the fallback processor
-            pdf_processor = PDFProcessor()
             chunker = TextChunker(
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
                 min_chunk_length=settings.min_chunk_length
             )
 
-            # Extract TOC and chapters programmatically
-            task.update_state(state="PROCESSING", meta={
-                "progress": 8,
-                "stage": "extracting_toc_fallback",
-                "warning": f"Using fallback processor: {fallback_reason}",
-                "chapters_total": 0,
-                "chapters_processed": 0
-            })
+            # ---------------------------------------------------------------
+            # Fallback 1: Docling layout-based processor
+            # ---------------------------------------------------------------
+            docling_succeeded = False
+            try:
+                from app.services.docling_pdf_processor import DoclingPDFProcessor
 
-            toc = pdf_processor.get_table_of_contents(file_path)
-            chapters_info_fallback = pdf_processor.analyze_chapters(toc, book_name)
-            total_chapters = len(chapters_info_fallback)
+                task.update_state(state="PROCESSING", meta={
+                    "progress": 5,
+                    "stage": "fallback_docling",
+                    "warning": f"Using Docling fallback: {fallback_reason}",
+                    "chapters_total": 0,
+                    "chapters_processed": 0
+                })
 
-            # Extract and chunk text
-            all_chunks = []
-            chapter_ids = {}
-            chapters_info = []
+                docling_processor = DoclingPDFProcessor()
+                raw_sections = docling_processor.process(file_path, book_name)
 
-            async with pool.acquire() as conn:
-                for i, chapter in enumerate(chapters_info_fallback):
-                    chapter_id = str(uuid4())
-                    chapter_ids[chapter["title"]] = chapter_id
-
-                    await conn.execute("""
-                        INSERT INTO chapters (id, book_id, title, chapter_number, start_page, end_page)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                    """, chapter_id, book_id, chapter["title"], i + 1,
-                       chapter.get("start_page"), chapter.get("end_page"))
-
-                    # Extract and chunk chapter text
-                    text = pdf_processor.extract_chapter_text(
-                        file_path, chapter.get("start_page"), chapter.get("end_page")
+                if raw_sections:
+                    all_chunks, chapter_ids, chapters_info = await _process_docling_sections(
+                        raw_sections, book_name, book_id, pool, chunker, task, fallback_reason
                     )
+                    docling_succeeded = True
+                    logger.info(f"Docling fallback extracted {len(all_chunks)} chunks")
 
-                    chunks = chunker.chunk_text(text, chapter["title"])
+            except Exception as de:
+                logger.warning(f"Docling fallback failed: {de}, falling back to programmatic processor")
 
-                    for chunk in chunks:
-                        chunk["chapter"] = chapter["title"]
-                        chunk["chapter_id"] = chapter_id
-                        chunk["book_id"] = book_id
-                        chunk["book_name"] = book_name
-                        all_chunks.append(chunk)
+            # ---------------------------------------------------------------
+            # Fallback 2: Programmatic processor (last resort)
+            # ---------------------------------------------------------------
+            if not docling_succeeded:
+                task.update_state(state="PROCESSING", meta={
+                    "progress": 8,
+                    "stage": "fallback_processing",
+                    "warning": f"Using fallback processor: {fallback_reason}",
+                    "chapters_total": 0,
+                    "chapters_processed": 0
+                })
 
-                    chapters_info.append({
-                        "title": chapter["title"],
-                        "chapter_id": chapter_id
-                    })
+                pdf_processor = PDFProcessor()
 
-                    progress = 10 + (i / max(total_chapters, 1)) * 30
-                    task.update_state(state="PROCESSING", meta={
-                        "progress": progress,
-                        "stage": "chunking_fallback",
-                        "warning": f"Using fallback processor: {fallback_reason}",
-                        "chapters_total": total_chapters,
-                        "chapters_processed": i,
-                        "current_chapter": chapter["title"]
-                    })
+                task.update_state(state="PROCESSING", meta={
+                    "progress": 10,
+                    "stage": "extracting_toc_fallback",
+                    "warning": f"Using fallback processor: {fallback_reason}",
+                    "chapters_total": 0,
+                    "chapters_processed": 0
+                })
 
-            logger.info(f"Fallback processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
+                toc = pdf_processor.get_table_of_contents(file_path)
+                chapters_info_fallback = pdf_processor.analyze_chapters(toc, book_name)
+                total_chapters = len(chapters_info_fallback)
+
+                all_chunks = []
+                chapter_ids = {}
+                chapters_info = []
+
+                async with pool.acquire() as conn:
+                    for i, chapter in enumerate(chapters_info_fallback):
+                        chapter_id = str(uuid4())
+                        chapter_ids[chapter["title"]] = chapter_id
+
+                        await conn.execute("""
+                            INSERT INTO chapters (id, book_id, title, chapter_number, start_page, end_page)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                        """, chapter_id, book_id, chapter["title"], i + 1,
+                           chapter.get("start_page"), chapter.get("end_page"))
+
+                        text = pdf_processor.extract_chapter_text(
+                            file_path, chapter.get("start_page"), chapter.get("end_page")
+                        )
+
+                        chunks = chunker.chunk_text(text, chapter["title"])
+
+                        for chunk in chunks:
+                            chunk["chapter"] = chapter["title"]
+                            chunk["chapter_id"] = chapter_id
+                            chunk["book_id"] = book_id
+                            chunk["book_name"] = book_name
+                            all_chunks.append(chunk)
+
+                        chapters_info.append({
+                            "title": chapter["title"],
+                            "chapter_id": chapter_id
+                        })
+
+                        progress = 10 + (i / max(total_chapters, 1)) * 30
+                        task.update_state(state="PROCESSING", meta={
+                            "progress": progress,
+                            "stage": "chunking_fallback",
+                            "warning": f"Using fallback processor: {fallback_reason}",
+                            "chapters_total": total_chapters,
+                            "chapters_processed": i,
+                            "current_chapter": chapter["title"]
+                        })
+
+                logger.info(f"Fallback processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
 
         logger.info(f"Total chunks to embed: {len(all_chunks)}")
 

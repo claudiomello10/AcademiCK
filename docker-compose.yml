@@ -179,6 +179,7 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed
@@ -214,6 +215,7 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed
