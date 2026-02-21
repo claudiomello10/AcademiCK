@@ -119,7 +119,7 @@ class RAGOrchestrator:
                 model=settings.query_enhancement_model,
                 temperature=0.3  # Lower temperature for more focused queries
             )
-            response = llm_result["text"]
+            response = llm_result["text"] or ""
 
             logger.debug(f"Query enhancement response: {response}")
 
@@ -237,6 +237,28 @@ class RAGOrchestrator:
             )
             response = llm_result["text"]
             tokens_used = llm_result.get("total_tokens")
+
+            # Retry once if response is empty
+            if not response:
+                logger.warning(
+                    f"Empty LLM response on first attempt, retrying: "
+                    f"model={model}, intent={intent}"
+                )
+                llm_result = await self.llm_service.generate(
+                    messages=messages,
+                    model=model,
+                    temperature=0.7
+                )
+                response = llm_result["text"]
+                tokens_used = llm_result.get("total_tokens")
+
+            # Fallback if still empty after retry
+            if not response:
+                logger.error(
+                    f"Empty LLM response after retry: "
+                    f"model={model}, intent={intent}"
+                )
+                response = "Desculpe, não consegui gerar uma resposta. Por favor, tente novamente."
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             response = "I apologize, but I encountered an error generating a response. Please try again."
