@@ -177,7 +177,7 @@ Guidelines for search queries:
 - The search queries should all be focused on the same topic, but they should be different.
 - It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books.
 - If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book".
-- The book name should be written exactly as it is written in the tag <Book>name_of_the_book</Book>, do not ommit any part of the name, and do not add any part to the name.
+- The book name should be written exactly as it is written in the tag <Book>name_of_the_book</Book>, do not omit any part of the name, and do not add any part to the name.
 - If no specific book is mentioned or if the search should be performed across all available resources, use book="all".
 - Focus only on search term generation. Do not provide explanations or answers.
 - The subject of the conversation is {subject}.
