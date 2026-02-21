@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # Model for query enhancement (fast and cheap, runs on every query)
     query_enhancement_model: str = os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-5-nano")
 
+    # Maximum completion tokens for LLM responses (includes reasoning + output)
+    llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "16384"))
+
     # Default subject for new sessions
     default_subject: str = os.getenv("DEFAULT_SUBJECT", "Machine Learning")
 

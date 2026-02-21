@@ -50,7 +50,7 @@ class LLMService:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 4096
+        max_tokens: int = settings.llm_max_tokens
     ) -> Dict[str, Any]:
         """
         Generate a response using the specified model.
