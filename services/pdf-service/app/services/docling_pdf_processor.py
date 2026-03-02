@@ -162,7 +162,6 @@ class DoclingPDFProcessor:
             completion = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0,
             )
             answer = completion.choices[0].message.content.strip()
 
