@@ -67,7 +67,7 @@ async def _process_docling_sections(
 
     Args:
         sections: Output of DoclingPDFProcessor.process() — list of
-                  {chapter, topic, text, is_first_in_chapter} dicts.
+                  {chapter, topic, text, is_first_in_chapter, page} dicts.
         book_name, book_id, pool, chunker, task, fallback_reason: as in caller.
 
     Returns:
@@ -94,13 +94,13 @@ async def _process_docling_sections(
         for i, chapter_title in enumerate(chapter_order):
             chapter_id = str(uuid4())
             chapter_ids[chapter_title] = chapter_id
+            chapter_sections = chapters_by_title[chapter_title]
+            start_page = chapter_sections[0].get("page") if chapter_sections else None
 
             await conn.execute("""
-                INSERT INTO chapters (id, book_id, title, chapter_number)
-                VALUES ($1, $2, $3, $4)
-            """, chapter_id, book_id, chapter_title, i + 1)
-
-            chapter_sections = chapters_by_title[chapter_title]
+                INSERT INTO chapters (id, book_id, title, chapter_number, start_page)
+                VALUES ($1, $2, $3, $4, $5)
+            """, chapter_id, book_id, chapter_title, i + 1, start_page)
             chapter_chunk_index = 0
 
             for section in chapter_sections:
@@ -111,12 +111,13 @@ async def _process_docling_sections(
 
                 for chunk in raw_chunks:
                     # Use the Docling sub-heading as topic when available
-                    if topic_override and chunk_index_is_first(chunk, chapter_chunk_index):
+                    if topic_override:
                         chunk["topic"] = topic_override
                     chunk["chapter"] = chapter_title
                     chunk["chapter_id"] = chapter_id
                     chunk["book_id"] = book_id
                     chunk["book_name"] = book_name
+                    chunk["page"] = section.get("page")
                     # Mark first chunk of the whole chapter as introduction
                     chunk["is_introduction"] = chapter_chunk_index == 0
                     chunk["chunk_index"] = chapter_chunk_index
@@ -137,10 +138,6 @@ async def _process_docling_sections(
 
     return all_chunks, chapter_ids, chapters_info
 
-
-def chunk_index_is_first(chunk: dict, chapter_chunk_index: int) -> bool:
-    """Return True for the first chunk of a section (used for topic assignment)."""
-    return chapter_chunk_index == 0 or chunk.get("chunk_index", 0) == 0
 
 
 async def _process_pdf_async(task, file_path: str, book_name: str):
@@ -183,6 +180,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
 
     # Track fallback status
     use_fallback = False
+    docling_succeeded = False
     fallback_reason = None
 
     try:
@@ -312,7 +310,6 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             # ---------------------------------------------------------------
             # Fallback 1: Docling layout-based processor
             # ---------------------------------------------------------------
-            docling_succeeded = False
             try:
                 from app.services.docling_pdf_processor import DoclingPDFProcessor
 
@@ -412,7 +409,12 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
 
         # Generate embeddings in batches
         total_chapters = len(chapters_info)
-        warning_msg = f"Using fallback processor: {fallback_reason}" if use_fallback else None
+        if not use_fallback:
+            warning_msg = None
+        elif docling_succeeded:
+            warning_msg = f"Using Docling fallback: {fallback_reason}"
+        else:
+            warning_msg = f"Using last-resort fallback: {fallback_reason}"
 
         task.update_state(state="PROCESSING", meta={
             "progress": 40,
@@ -472,6 +474,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "topic": chunk.get("topic", ""),
                         "text": chunk["text"],
                         "is_introduction": chunk.get("is_introduction", False),
+                        "page_number": chunk.get("page"),
                         "created_at": datetime.utcnow().isoformat()
                     }
                 ))
@@ -484,6 +487,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     "text": chunk["text"],
                     "topic": chunk.get("topic", ""),
                     "is_introduction": chunk.get("is_introduction", False),
+                    "page_number": chunk.get("page"),
                     "char_count": len(chunk["text"])
                 })
 
@@ -531,11 +535,12 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 await conn.execute("""
                     INSERT INTO chunks
                     (id, book_id, chapter_id, qdrant_point_id, text, topic,
-                     is_introduction, char_count, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     is_introduction, page_number, char_count, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """, chunk["id"], chunk["book_id"], chunk["chapter_id"],
                    chunk["qdrant_point_id"], clean_text, clean_topic,
-                   chunk["is_introduction"], len(clean_text), datetime.utcnow())
+                   chunk["is_introduction"], chunk.get("page_number"),
+                   len(clean_text), datetime.utcnow())
 
             # Update book status
             await conn.execute("""

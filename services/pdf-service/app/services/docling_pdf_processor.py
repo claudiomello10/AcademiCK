@@ -59,10 +59,11 @@ class DoclingPDFProcessor:
         Returns:
             List of section dicts:
                 {
-                    "chapter":        str,   # top-level heading text
-                    "topic":          str,   # sub-heading text (empty string if none)
-                    "text":           str,   # raw body text for this section
-                    "is_first_in_chapter": bool
+                    "chapter":             str,       # top-level heading text
+                    "topic":               str,       # sub-heading text (empty string if none)
+                    "text":                str,       # raw body text for this section
+                    "is_first_in_chapter": bool,
+                    "page":                int|None   # 1-based page number of the heading
                 }
             Empty list if Docling finds no headings (triggers last-resort fallback).
         """
@@ -112,7 +113,8 @@ class DoclingPDFProcessor:
                 # Save previous section
                 if current is not None:
                     sections.append(current)
-                current = {"heading": text, "level": level, "paragraphs": []}
+                page_no = item.prov[0].page_no if item.prov else None
+                current = {"heading": text, "level": level, "paragraphs": [], "page": page_no}
 
             elif label in (DocItemLabel.PARAGRAPH, DocItemLabel.TEXT, DocItemLabel.LIST_ITEM):
                 text = (item.text or "").strip()
@@ -198,16 +200,19 @@ class DoclingPDFProcessor:
 
         output = []
         current_chapter = book_name
+        current_chapter_page = None
         chapter_section_index = 0
 
         for section in raw_sections:
             heading = section["heading"]
+            page = section.get("page")
             body = "\n\n".join(section["paragraphs"]).strip()
 
             if not body:
                 # No text content — update chapter tracking but emit nothing
                 if heading and heading in chapter_headings:
                     current_chapter = heading
+                    current_chapter_page = page
                     chapter_section_index = 0
                 continue
 
@@ -217,6 +222,7 @@ class DoclingPDFProcessor:
                     "chapter": current_chapter,
                     "topic": "",
                     "text": body,
+                    "page": current_chapter_page,
                     "is_first_in_chapter": chapter_section_index == 0,
                 })
                 chapter_section_index += 1
@@ -224,11 +230,13 @@ class DoclingPDFProcessor:
             elif heading in chapter_headings:
                 # New top-level chapter
                 current_chapter = heading
+                current_chapter_page = page
                 chapter_section_index = 0
                 output.append({
                     "chapter": current_chapter,
                     "topic": "",
                     "text": body,
+                    "page": page,
                     "is_first_in_chapter": True,
                 })
                 chapter_section_index += 1
@@ -239,6 +247,7 @@ class DoclingPDFProcessor:
                     "chapter": current_chapter,
                     "topic": heading,
                     "text": body,
+                    "page": page,
                     "is_first_in_chapter": chapter_section_index == 0,
                 })
                 chapter_section_index += 1

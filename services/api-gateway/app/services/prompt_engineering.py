@@ -42,9 +42,11 @@ def format_context(chunks: List[Dict]) -> str:
         chapter_title = chunk.get('chapter_title', 'Unknown')
         topic = chunk.get('topic', '')
         text = chunk.get('text', '')
+        page_number = chunk.get('page_number')
+        page_str = f" - Page: {page_number}" if page_number else ""
 
         formatted.append(
-            f"Retrieval {i}: From Book: {book_name} - Chapter {chapter_title} - Section: {topic}\n{text}"
+            f"Retrieval {i}: From Book: {book_name} - Chapter {chapter_title} - Section: {topic}{page_str}\n{text}"
         )
 
     return "\n\n".join(formatted)
