@@ -5,6 +5,8 @@ import logging
 import re
 from typing import List, Dict, Set
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,10 +28,12 @@ class DoclingPDFProcessor:
     to the last-resort processor.
     """
 
-    def __init__(self):
+    def __init__(self, llm_model: str = settings.pdf_chapter_detection_model):
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        self.model = llm_model
 
         # Use the standard pipeline (layout model enabled) so section headings are
         # correctly identified even in multi-column PDFs.
@@ -139,7 +143,6 @@ class DoclingPDFProcessor:
         the full set of headings so every heading becomes a chapter (flat fallback).
         """
         try:
-            from app.config import settings
             if not settings.openai_api_key:
                 raise ValueError("No OpenAI API key configured")
 
@@ -157,7 +160,7 @@ class DoclingPDFProcessor:
             )
 
             completion = client.chat.completions.create(
-                model="gpt-4.1-nano",
+                model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
             )

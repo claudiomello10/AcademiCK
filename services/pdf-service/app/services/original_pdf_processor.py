@@ -29,7 +29,7 @@ class OriginalPDFProcessor:
     - Minimum chunk length filter (300 chars)
     """
 
-    def __init__(self, llm_model: str = "gpt-5-mini"):
+    def __init__(self, llm_model: str = settings.pdf_chapter_detection_model):
         """Initialize the OriginalPDFProcessor."""
         self.model = llm_model
         self.client = OpenAI(api_key=settings.openai_api_key)
