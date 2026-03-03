@@ -43,5 +43,5 @@ python-magic==0.4.27
 docling==2.74.0
 
 # OCR engine for Docling (handles scanned/image-based PDFs)
-onnxruntime
-rapidocr-onnxruntime
+onnxruntime==1.24.2
+rapidocr-onnxruntime==1.4.4
