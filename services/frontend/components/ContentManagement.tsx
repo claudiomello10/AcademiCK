@@ -300,9 +300,9 @@ const ContentManagement = () => {
                 const jobs: ProcessingJob[] = data.jobs.map((job: { filename: string; job_id: string; status: string }) => ({
                     filename: job.filename,
                     job_id: job.job_id,
-                    status: job.status || 'queued',
+                    status: job.status || 'pending',
                     progress: 0,
-                    stage: 'queued'
+                    stage: 'pending'
                 }));
 
                 if (data.errors && data.errors.length > 0) {
@@ -683,6 +683,7 @@ const ContentManagement = () => {
                                                 {job.status === 'completed' ? 'Complete' :
                                                  job.status === 'failed' ? 'Failed' :
                                                  job.status === 'cancelled' ? 'Cancelled' :
+                                                 job.status === 'pending' || job.stage === 'pending' ? 'Waiting for available worker...' :
                                                  job.chapters_total && job.chapters_total > 0 &&
                                                  (job.chapters_processed || 0) < job.chapters_total &&
                                                  !job.stage?.includes('embedding') &&
@@ -691,7 +692,7 @@ const ContentManagement = () => {
                                                     : job.stage ? job.stage.replace(/_/g, ' ') : 'Processing...'}
                                             </span>
                                             {/* Show Cancel button for in-progress jobs, Dismiss button for finished jobs */}
-                                            {(job.status === 'queued' || job.status === 'processing') ? (
+                                            {(job.status === 'pending' || job.status === 'processing') ? (
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"

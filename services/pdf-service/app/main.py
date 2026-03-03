@@ -85,7 +85,7 @@ async def process_pdf(request: ProcessRequest):
 
     return ProcessResponse(
         job_id=task.id,
-        status="queued",
+        status="pending",
         message=f"Processing started for {request.book_name}"
     )
 
@@ -173,7 +173,7 @@ async def upload_and_process(
 
     return ProcessResponse(
         job_id=task.id,
-        status="queued",
+        status="pending",
         message=f"Upload complete. Processing started for {book_name}"
     )
 

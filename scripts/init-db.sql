@@ -177,8 +177,8 @@ CREATE INDEX IF NOT EXISTS idx_chunk_retrievals_created ON chunk_retrievals(crea
 CREATE TABLE IF NOT EXISTS processing_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_type VARCHAR(50) NOT NULL CHECK (job_type IN ('pdf_processing', 'reindex', 'migration', 'embedding_update')),
-    status VARCHAR(50) DEFAULT 'queued'
-        CHECK (status IN ('queued', 'processing', 'completed', 'failed', 'cancelled')),
+    status VARCHAR(50) DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
     book_id UUID REFERENCES books(id) ON DELETE SET NULL,
     progress FLOAT DEFAULT 0 CHECK (progress >= 0 AND progress <= 1),
     error_message TEXT,
