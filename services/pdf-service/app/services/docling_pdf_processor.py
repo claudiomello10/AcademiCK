@@ -20,9 +20,9 @@ class DoclingPDFProcessor:
     chunking the text via TextChunker.
 
     Processing order in tasks.py:
-        1. OriginalPDFProcessor (LLM-based, primary)
+        1. DefaultPDFProcessor  (LLM-based, primary)
         2. DoclingPDFProcessor  (layout-based, this class)
-        3. PDFProcessor         (flat fallback, last resort)
+        3. FallbackPDFProcessor (flat fallback, last resort)
 
     Returns [] when no headings are detected so the caller can fall through
     to the last-resort processor.
@@ -38,7 +38,7 @@ class DoclingPDFProcessor:
         # Use the standard pipeline (layout model enabled) so section headings are
         # correctly identified even in multi-column PDFs.
         # OCR is disabled since we only process text-native PDFs here — scanned PDFs
-        # will return no sections and fall through to the last-resort PDFProcessor.
+        # will return no sections and fall through to the last-resort FallbackPDFProcessor.
         # Table structure is disabled to reduce compute cost.
         pipeline_options = PdfPipelineOptions()
         pipeline_options.do_ocr = False

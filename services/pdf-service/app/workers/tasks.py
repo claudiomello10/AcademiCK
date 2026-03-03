@@ -19,7 +19,7 @@ from app.services.chunker import TextChunker
 
 logger = logging.getLogger(__name__)
 
-# Try to import NLTK for original processor
+# Try to import NLTK for default processor
 try:
     import nltk
     nltk.download('punkt', quiet=True)
@@ -142,8 +142,8 @@ async def _process_docling_sections(
 async def _process_pdf_async(task, file_path: str, book_name: str):
     """Async implementation of PDF processing with dual-method support.
 
-    Tries the original LLM-based processor first, falls back to programmatic
-    processor if that fails.
+    Tries the default LLM-based processor first, falls back to Docling and
+    then the fallback processor if that fails.
     """
     # Initialize clients
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
@@ -209,7 +209,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             if existing:
                 book_id = str(existing)
 
-        # Try original processing first (LLM-based chapter identification)
+        # Try default processing first (LLM-based chapter identification)
         all_chunks = []
         chapter_ids = {}
         chapters_info = []
@@ -236,7 +236,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 raise ValueError("No chapters identified by LLM")
 
             total_chapters = len(summary_list)
-            logger.info(f"Original processor identified {total_chapters} chapters")
+            logger.info(f"Default processor identified {total_chapters} chapters")
 
             task.update_state(state="PROCESSING", meta={
                 "progress": 10,
@@ -295,12 +295,12 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "chapter_id": chapter_id
                     })
 
-            logger.info(f"Original processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
+            logger.info(f"Default processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
 
         except Exception as e:
             use_fallback = True
             fallback_reason = str(e)
-            logger.warning(f"Original processing failed, using fallback: {e}")
+            logger.warning(f"Default processing failed, using fallback: {e}")
 
             chunker = TextChunker(
                 chunk_size=settings.chunk_size,
@@ -333,10 +333,10 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     logger.info(f"Docling fallback extracted {len(all_chunks)} chunks")
 
             except Exception as de:
-                logger.warning(f"Docling fallback failed: {de}, falling back to programmatic processor")
+                logger.warning(f"Docling fallback failed: {de}, falling back to fallback processor")
 
             # ---------------------------------------------------------------
-            # Fallback 2: Programmatic processor (last resort)
+            # Fallback 2: Fallback processor (last resort)
             # ---------------------------------------------------------------
             if not docling_succeeded:
                 from app.services.fallback_pdf_processor import FallbackPDFProcessor
