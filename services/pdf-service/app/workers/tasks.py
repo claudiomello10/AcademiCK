@@ -138,9 +138,10 @@ async def _process_docling_sections(
 
 
 async def _process_pdf_async(task, file_path: str, book_name: str):
-    """Async implementation of PDF processing with dual-method support.
-    Tries the default LLM-based processor first, falls back to Docling and
-    then the fallback processor if that fails.
+    """Async implementation of PDF processing with two-method support.
+
+    Tries the default LLM-based processor first, falls back to Docling
+    if that fails. If both fail, the job fails with an error.
     """
     # Initialize clients
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
@@ -330,42 +331,26 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     logger.info(f"Docling fallback extracted {len(all_chunks)} chunks")
 
             except Exception as de:
-                logger.warning(f"Docling fallback failed: {de}, falling back to fallback processor")
+                logger.error(f"Docling fallback also failed: {de}")
 
-            # ---------------------------------------------------------------
-            # Fallback 2: Fallback processor (last resort)
-            # ---------------------------------------------------------------
             if not docling_succeeded:
-                from app.services.fallback_pdf_processor import FallbackPDFProcessor
+                raise RuntimeError(
+                    f"All processing methods failed. Default: {fallback_reason}. "
+                    f"Docling also failed to extract structure."
+                )
 
-                task.update_state(state="PROCESSING", meta={
-                    "progress": 8,
-                    "stage": "fallback_processing",
-                    "warning": f"Using fallback processor: {fallback_reason}",
-                    "chapters_total": 0,
-                    "chapters_processed": 0
-                })
-
-                fallback_processor = FallbackPDFProcessor()
-                chunks = fallback_processor.get_all_chunks(file_path, book_name)
-
-                all_chunks = []
-                for chunk in chunks:
-                    chunk["book_id"] = book_id
-                    all_chunks.append(chunk)
-
-                logger.info(f"Fallback processor extracted {len(all_chunks)} chunks")
+        # Determine processing method and warning
+        if not use_fallback:
+            processing_method = "default"
+            warning_msg = None
+        else:
+            processing_method = "docling"
+            warning_msg = f"Using Docling fallback: {fallback_reason}"
 
         logger.info(f"Total chunks to embed: {len(all_chunks)}")
 
         # Generate embeddings in batches
         total_chapters = len(chapters_info)
-        if not use_fallback:
-            warning_msg = None
-        elif docling_succeeded:
-            warning_msg = f"Using Docling fallback: {fallback_reason}"
-        else:
-            warning_msg = f"Using last-resort fallback: {fallback_reason}"
 
         task.update_state(state="PROCESSING", meta={
             "progress": 40,
@@ -499,9 +484,10 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 SET processing_status = 'completed',
                     total_chunks = $1,
                     processed_at = $2,
-                    updated_at = $2
+                    updated_at = $2,
+                    processing_method = $4
                 WHERE id = $3
-            """, len(chunks_for_db), datetime.utcnow(), book_id)
+            """, len(chunks_for_db), datetime.utcnow(), book_id, processing_method)
 
             # Update chapter chunk counts
             for chapter_title, chapter_id in chapter_ids.items():
@@ -528,6 +514,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             "book_name": book_name,
             "chunks_processed": len(chunks_for_db),
             "chapters_processed": len(chapters_info),
+            "processing_method": processing_method,
             "used_fallback": use_fallback,
             "fallback_reason": fallback_reason
         }

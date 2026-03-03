@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS books (
     total_chunks INTEGER DEFAULT 0,
     processing_status VARCHAR(50) DEFAULT 'pending'
         CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
+    processing_method VARCHAR(50) DEFAULT NULL,
     error_message TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,

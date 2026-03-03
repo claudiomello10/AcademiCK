@@ -21,7 +21,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 - **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with Reciprocal Rank Fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
 - **Multi-Provider LLM** — Choose between OpenAI, Anthropic, or DeepSeek models per query
-- **PDF Processing Pipeline** — Three-tier processing cascade: LLM-based, layout-based (Docling), and flat fallback with per-chunk page tracking
+- **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
 - **Admin Dashboard** — Content management, user management, and usage statistics
 - **Fully Dockerized** — One command to start 11 services with health checks and auto-restart

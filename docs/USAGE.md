@@ -118,7 +118,7 @@ curl "http://localhost/api/v1/admin/jobs?session_id={admin_session}"
 
 ### PDF Processing Methods
 
-The system uses a **three-tier processing cascade**, trying each method in order:
+The system uses a **two-tier processing cascade**, trying each method in order:
 
 1. **Default: LLM-Based Processing** (`DefaultPDFProcessor`)
    - Uses an LLM to identify chapters and topics from the table of contents
@@ -127,23 +127,17 @@ The system uses a **three-tier processing cascade**, trying each method in order
    - Quality filters: period ratio filter (>2% = skip), minimum 300 chars
    - Configurable via `PDF_CHAPTER_DETECTION_MODEL`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `MIN_CHUNK_LENGTH`
 
-2. **Fallback 1: Layout-Based Processing** (`DoclingPDFProcessor`)
+2. **Fallback: Layout-Based Processing** (`DoclingPDFProcessor`)
    - Used when LLM processing fails (no API key, no TOC detected, etc.)
    - Docling layout analysis detects headings in the PDF structure
    - LLM classifies detected headings into chapters vs. sub-sections
-   - Falls through to Fallback 2 if no headings are found
-
-3. **Fallback 2: Flat Processing** (`FallbackPDFProcessor`)
-   - Last resort when both methods above fail
-   - Extracts all text page-by-page with per-chunk page tracking
-   - No chapter or topic detection — chunks are attributed to the book only
-   - User is warned when any fallback is used
+   - If both methods fail, the job fails with an error
 
 ### Progress Tracking Features
 
 - **Chapter-based progress**: Shows "Chapter X/Y" during processing
 - **Real-time updates**: Progress bar updates every 3 seconds
-- **Fallback warnings**: Yellow alert when fallback processor is used
+- **Fallback warnings**: Yellow alert when the Docling fallback is used
 - **Job dismissal**: Manually dismiss completed jobs from the list
 - **Persistent jobs**: Jobs are stored in PostgreSQL, visible to all admins
 - **Auto-cleanup**: Jobs auto-hide after 12 hours or when exceeding 10 jobs

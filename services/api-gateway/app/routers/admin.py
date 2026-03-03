@@ -615,10 +615,11 @@ async def get_book_list(request: Request, session_id: str):
                 b.name,
                 COUNT(DISTINCT c.id) as total_chapters,
                 COALESCE(b.total_chunks, 0) as total_chunks,
-                b.processing_status
+                b.processing_status,
+                b.processing_method
             FROM books b
             LEFT JOIN chapters c ON b.id = c.book_id
-            GROUP BY b.id, b.name, b.total_chunks, b.processing_status
+            GROUP BY b.id, b.name, b.total_chunks, b.processing_status, b.processing_method
             ORDER BY b.name
         """)
 
@@ -627,7 +628,8 @@ async def get_book_list(request: Request, session_id: str):
                 "name": book["name"],
                 "total_chapters": book["total_chapters"],
                 "total_chunks": book["total_chunks"],
-                "processing_status": book["processing_status"]
+                "processing_status": book["processing_status"],
+                "processing_method": book["processing_method"]
             }
             for book in books
         ]

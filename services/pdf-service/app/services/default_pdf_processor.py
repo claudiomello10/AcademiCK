@@ -1,6 +1,6 @@
 """
 Default PDF processor — uses LLM-based chapter identification and NLTK chunking
-for higher quality, more structured output compared to the fallback processor.
+for structured, hierarchical output. Falls back to DoclingPDFProcessor on failure.
 """
 
 import ast

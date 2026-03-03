@@ -21,11 +21,9 @@ class DoclingPDFProcessor:
 
     Processing order in tasks.py:
         1. DefaultPDFProcessor  (LLM-based, primary)
-        2. DoclingPDFProcessor  (layout-based, this class)
-        3. FallbackPDFProcessor (flat fallback, last resort)
+        2. DoclingPDFProcessor  (layout-based, this class — fallback)
 
-    Returns [] when no headings are detected so the caller can fall through
-    to the last-resort processor.
+    Returns [] when no headings are detected, which causes the job to fail.
     """
 
     def __init__(self, llm_model: str = settings.pdf_chapter_detection_model):
@@ -38,7 +36,7 @@ class DoclingPDFProcessor:
         # Use the standard pipeline (layout model enabled) so section headings are
         # correctly identified even in multi-column PDFs.
         # OCR is disabled since we only process text-native PDFs here — scanned PDFs
-        # will return no sections and fall through to the last-resort FallbackPDFProcessor.
+        # will return no sections and the job will fail with an error.
         # Table structure is disabled to reduce compute cost.
         pipeline_options = PdfPipelineOptions()
         pipeline_options.do_ocr = False
@@ -69,7 +67,7 @@ class DoclingPDFProcessor:
                     "is_first_in_chapter": bool,
                     "page":                int|None   # 1-based page number of the heading
                 }
-            Empty list if Docling finds no headings (triggers last-resort fallback).
+            Empty list if Docling finds no headings (causes the job to fail).
         """
         try:
             result = self._converter.convert(file_path)
@@ -81,7 +79,7 @@ class DoclingPDFProcessor:
         raw_sections = self._extract_sections(doc)
 
         if not raw_sections:
-            logger.info(f"Docling found no headings in {file_path}, will use last-resort fallback")
+            logger.info(f"Docling found no headings in {file_path}, processing will fail")
             return []
 
         # Try LLM-based hierarchy classification; fall back to flat if it fails

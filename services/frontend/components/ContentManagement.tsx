@@ -31,6 +31,7 @@ interface BookInfo {
     total_chapters: number;
     total_chunks: number;
     processing_status?: string;
+    processing_method?: string;
 }
 
 interface ExpandedState {
@@ -840,6 +841,7 @@ const ContentManagement = () => {
                                                     <p><strong>Total Chapters:</strong> {book.total_chapters}</p>
                                                     <p><strong>Total Chunks:</strong> {book.total_chunks}</p>
                                                     <p><strong>Status:</strong> {book.processing_status === 'completed' ? 'Complete' : book.processing_status === 'processing' ? 'Processing...' : book.processing_status || 'Unknown'}</p>
+                                                    <p><strong>Processing Method:</strong> {book.processing_method === 'default' ? 'Default' : book.processing_method === 'docling' ? 'Docling (layout-based)' : 'Unknown'}</p>
                                                 </div>
                                             </div>
                                         )}
