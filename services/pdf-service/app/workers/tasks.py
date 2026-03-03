@@ -138,10 +138,8 @@ async def _process_docling_sections(
     return all_chunks, chapter_ids, chapters_info
 
 
-
 async def _process_pdf_async(task, file_path: str, book_name: str):
     """Async implementation of PDF processing with dual-method support.
-
     Tries the default LLM-based processor first, falls back to Docling and
     then the fallback processor if that fails.
     """
