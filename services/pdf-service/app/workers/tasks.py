@@ -72,7 +72,6 @@ async def _process_docling_sections(
     Returns:
         (all_chunks, chapter_ids, chapters_info) matching the existing fallback format.
     """
-    from uuid import uuid4
 
     # Group sections by chapter to create one DB chapter record per chapter title
     chapter_order = []
