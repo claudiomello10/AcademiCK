@@ -118,20 +118,26 @@ curl "http://localhost/api/v1/admin/jobs?session_id={admin_session}"
 
 ### PDF Processing Methods
 
-The system uses a **dual-method processing approach**:
+The system uses a **three-tier processing cascade**, trying each method in order:
 
-1. **Primary: LLM-Based Processing**
-   - Uses GPT-4o-mini to identify chapters from table of contents
-   - Maintains hierarchical structure (Chapter -> Topics)
-   - NLTK chunking with 3000 char chunks, 1000 char overlap
-   - Quality filters: period ratio filter (>2% = skip), min 300 chars
-   - Produces higher quality, structured output
+1. **Default: LLM-Based Processing** (`DefaultPDFProcessor`)
+   - Uses an LLM to identify chapters and topics from the table of contents
+   - Maintains hierarchical structure (Chapter → Topics)
+   - NLTK chunking with per-chunk page tracking
+   - Quality filters: period ratio filter (>2% = skip), minimum 300 chars
+   - Configurable via `PDF_CHAPTER_DETECTION_MODEL`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `MIN_CHUNK_LENGTH`
 
-2. **Fallback: Programmatic Processing**
-   - Used when LLM processing fails (no TOC, API unavailable, etc.)
-   - Programmatic chapter detection from TOC
-   - Semantic chunking with 512 char chunks, 50 char overlap
-   - User is warned when fallback is used
+2. **Fallback 1: Layout-Based Processing** (`DoclingPDFProcessor`)
+   - Used when LLM processing fails (no API key, no TOC detected, etc.)
+   - Docling layout analysis detects headings in the PDF structure
+   - LLM classifies detected headings into chapters vs. sub-sections
+   - Falls through to Fallback 2 if no headings are found
+
+3. **Fallback 2: Flat Processing** (`FallbackPDFProcessor`)
+   - Last resort when both methods above fail
+   - Extracts all text page-by-page with per-chunk page tracking
+   - No chapter or topic detection — chunks are attributed to the book only
+   - User is warned when any fallback is used
 
 ### Progress Tracking Features
 
@@ -227,34 +233,94 @@ python scripts/migrate_embeddings.py \
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `POSTGRES_PASSWORD` | **Yes** | - | PostgreSQL password |
-| `REDIS_PASSWORD` | **Yes** | - | Redis authentication password |
-| `SESSION_SECRET` | **Yes** | - | Session token encryption key |
-| `ADMIN_PASSWORD` | **Yes** | - | Admin user password |
-| `GUEST_PASSWORD` | **Yes** | - | Guest user password |
-| `OPENAI_API_KEY` | At least one | - | OpenAI API key |
-| `ANTHROPIC_API_KEY` | At least one | - | Anthropic API key |
-| `DEEPSEEK_API_KEY` | At least one | - | DeepSeek API key |
-| `DEFAULT_SUBJECT` | No | Machine Learning | Default academic subject for new sessions |
-| `POSTGRES_USER` | No | academick | PostgreSQL username |
-| `POSTGRES_DB` | No | academick | Database name |
-| `QDRANT_HOST` | No | qdrant | Qdrant hostname |
-| `QDRANT_PORT` | No | 6333 | Qdrant HTTP port |
-| `QDRANT_COLLECTION` | No | academick_embeddings | Qdrant collection name |
-| `DEFAULT_MODEL` | No | gpt-5-mini | Default LLM model |
-| `SESSION_TTL_MINUTES` | No | 30 | Session timeout |
-| `CONFIG_USERS_ENABLED` | No | true | Enable config users |
-| `DOCS_ENABLED` | No | true | Enable Swagger UI / ReDoc |
-| `EMBEDDING_DEVICE` | No | gpu | Device for embeddings (gpu/cpu) |
-| `EMBEDDING_BATCH_SIZE` | No | 16 | Embedding batch size |
-| `ENABLE_SNAPSHOT_MANAGEMENT` | No | true | Show snapshot management in admin |
-| `ENABLE_PDF_UPLOAD` | No | true | Show PDF upload in admin |
-| `NEXT_PUBLIC_API_URL` | No | http://localhost | API URL for frontend |
-| `NEXT_PUBLIC_DEFAULT_SUBJECT` | No | Machine Learning | Default subject in frontend |
+### Required
 
-See [.env.example](../.env.example) for the full list with detailed descriptions and advanced options.
+| Variable | Description |
+|----------|-------------|
+| `POSTGRES_PASSWORD` | PostgreSQL password |
+| `REDIS_PASSWORD` | Redis authentication password |
+| `SESSION_SECRET` | Session token encryption key |
+| `ADMIN_PASSWORD` | Admin user password |
+| `GUEST_PASSWORD` | Guest user password |
+| `OPENAI_API_KEY` | OpenAI API key (at least one LLM key required) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (at least one LLM key required) |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (at least one LLM key required) |
+
+### General
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEFAULT_SUBJECT` | `Machine Learning` | Default academic subject for new sessions |
+| `SESSION_TTL_MINUTES` | `30` | Session expiration time in minutes |
+| `DOCS_ENABLED` | `true` | Enable Swagger UI and ReDoc at `/docs` |
+| `CONFIG_USERS_ENABLED` | `true` | Enable hardcoded admin/guest users (disable in production) |
+| `NEXT_PUBLIC_API_URL` | `http://localhost` | API URL used by the frontend at build time |
+| `NEXT_PUBLIC_DEFAULT_SUBJECT` | `Machine Learning` | Default subject shown in the frontend |
+
+### LLM & RAG
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEFAULT_MODEL` | `gpt-5-mini` | Default LLM model for RAG responses |
+| `QUERY_ENHANCEMENT_MODEL` | `gpt-5-nano` | Model for generating focused search queries (runs on every query) |
+| `LLM_MAX_TOKENS` | `16384` | Maximum completion tokens (increase for reasoning models) |
+| `TOP_K_SEARCHING` | `10` | Retrieval chunks for `searching_for_information` intent |
+| `TOP_K_DEFAULT` | `6` | Retrieval chunks for all other intents |
+| `SEARCH_WEIGHT_QA_DENSE` | `0.6` | Dense weight for Q&A queries (sparse = 1 - dense) |
+| `SEARCH_WEIGHT_SUMMARIZATION_DENSE` | `0.7` | Dense weight for summarization queries |
+| `SEARCH_WEIGHT_CODING_DENSE` | `0.4` | Dense weight for coding queries |
+| `SEARCH_WEIGHT_SEARCHING_DENSE` | `0.5` | Dense weight for search queries |
+
+### Database & Storage
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_USER` | `academick` | PostgreSQL username |
+| `POSTGRES_DB` | `academick` | PostgreSQL database name |
+| `QDRANT_HOST` | `qdrant` | Qdrant hostname (`qdrant` for Docker, `localhost` for local dev) |
+| `QDRANT_PORT` | `6333` | Qdrant HTTP API port |
+| `QDRANT_COLLECTION` | `academick_embeddings` | Qdrant collection name for embeddings |
+
+### Embedding Service
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMBEDDING_DEVICE` | `gpu` | Device for embeddings: `gpu` or `cpu` |
+| `EMBEDDING_BATCH_SIZE` | `16` | Batch size for embedding generation (1–32) |
+| `MODEL_NAME` | `BAAI/bge-m3` | HuggingFace embedding model (**changing requires re-processing all PDFs**) |
+| `CUDA_VISIBLE_DEVICES` | `0` | GPU device IDs for CUDA (comma-separated for multi-GPU) |
+| `MAX_LENGTH` | `8192` | Maximum tokenization input length in tokens |
+| `USE_FP16` | `true` | Enable FP16 precision on GPU (reduces memory, slightly faster) |
+
+### Intent Classification Service
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INTENT_MODEL_NAME` | `claudiomello/AcademiCK-intent-classifier` | HuggingFace intent classifier model |
+| `INTENT_DEVICE` | `cpu` | Device for intent classifier (`cpu` or `cuda`) |
+
+### PDF Processing
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PDF_CHAPTER_DETECTION_MODEL` | `gpt-5-nano` | LLM model for chapter/heading classification during PDF processing |
+| `MAX_UPLOAD_SIZE_MB` | `100` | Maximum PDF upload size in megabytes |
+| `CHUNK_SIZE` | `3000` | Text chunk size in characters (**changing requires re-processing all PDFs**) |
+| `CHUNK_OVERLAP` | `1000` | Character overlap between chunks (must be less than `CHUNK_SIZE`) |
+| `MIN_CHUNK_LENGTH` | `300` | Minimum chunk length to keep (shorter chunks are filtered out) |
+| `CELERY_WORKER_CONCURRENCY` | `2` | Number of parallel PDF processing workers (higher = more memory) |
+| `OMP_NUM_THREADS` | `4` | OpenMP threads for Docling/PyTorch CPU operations |
+| `UPLOAD_DIR` | `/app/processed/uploads` | Upload directory inside container (**requires volume mount update**) |
+| `PROCESSED_DIR` | `/app/processed` | Processed files directory inside container (**requires volume mount update**) |
+
+### Admin Dashboard
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_SNAPSHOT_MANAGEMENT` | `true` | Show Qdrant snapshot management buttons in admin |
+| `ENABLE_PDF_UPLOAD` | `true` | Show PDF upload button in admin |
+
+See [../.env.example](../.env.example) for all options with inline documentation.
 
 ---
 
