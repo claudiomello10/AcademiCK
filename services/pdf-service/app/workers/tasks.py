@@ -15,7 +15,6 @@ from qdrant_client.models import (
 
 from app.workers.celery_app import celery_app
 from app.config import settings
-from app.services.pdf_processor import PDFProcessor
 from app.services.chunker import TextChunker
 
 logger = logging.getLogger(__name__)
@@ -216,13 +215,13 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
         chapters_info = []
 
         try:
-            from app.services.original_pdf_processor import OriginalPDFProcessor
+            from app.services.default_pdf_processor import DefaultPDFProcessor
 
             # Check if OpenAI API key is configured
             if not settings.openai_api_key:
                 raise ValueError("OpenAI API key not configured")
 
-            original_processor = OriginalPDFProcessor()
+            default_processor = DefaultPDFProcessor()
 
             task.update_state(state="PROCESSING", meta={
                 "progress": 5,
@@ -232,7 +231,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             })
 
             # Get chapter structure using LLM
-            summary_list = original_processor.get_summary_list_from_PDF(file_path, book_name)
+            summary_list = default_processor.get_summary_list_from_PDF(file_path, book_name)
             if not summary_list:
                 raise ValueError("No chapters identified by LLM")
 
@@ -253,8 +252,10 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             reader = PdfReader(file_path)
             text_splitter = NLTKTextSplitter(
                 chunk_size=settings.chunk_size,
-                separator="\n",
-                chunk_overlap=settings.chunk_overlap
+                separator="",
+                chunk_overlap=settings.chunk_overlap,
+                add_start_index=True,
+                use_span_tokenize=True
             )
 
             async with pool.acquire() as conn:
@@ -279,8 +280,8 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "current_chapter": chapter_title
                     })
 
-                    # Process chapter using original processor's method
-                    chapter_chunks = original_processor.process_chapter(
+                    # Process chapter using default processor's method
+                    chapter_chunks = default_processor.process_chapter(
                         reader, chapter, idx, summary_list, book_name, text_splitter
                     )
 
@@ -338,6 +339,8 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             # Fallback 2: Programmatic processor (last resort)
             # ---------------------------------------------------------------
             if not docling_succeeded:
+                from app.services.fallback_pdf_processor import FallbackPDFProcessor
+
                 task.update_state(state="PROCESSING", meta={
                     "progress": 8,
                     "stage": "fallback_processing",
@@ -346,64 +349,15 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     "chapters_processed": 0
                 })
 
-                pdf_processor = PDFProcessor()
-
-                task.update_state(state="PROCESSING", meta={
-                    "progress": 10,
-                    "stage": "extracting_toc_fallback",
-                    "warning": f"Using fallback processor: {fallback_reason}",
-                    "chapters_total": 0,
-                    "chapters_processed": 0
-                })
-
-                toc = pdf_processor.get_table_of_contents(file_path)
-                chapters_info_fallback = pdf_processor.analyze_chapters(toc, book_name)
-                total_chapters = len(chapters_info_fallback)
+                fallback_processor = FallbackPDFProcessor()
+                chunks = fallback_processor.get_all_chunks(file_path, book_name)
 
                 all_chunks = []
-                chapter_ids = {}
-                chapters_info = []
+                for chunk in chunks:
+                    chunk["book_id"] = book_id
+                    all_chunks.append(chunk)
 
-                async with pool.acquire() as conn:
-                    for i, chapter in enumerate(chapters_info_fallback):
-                        chapter_id = str(uuid4())
-                        chapter_ids[chapter["title"]] = chapter_id
-
-                        await conn.execute("""
-                            INSERT INTO chapters (id, book_id, title, chapter_number, start_page, end_page)
-                            VALUES ($1, $2, $3, $4, $5, $6)
-                        """, chapter_id, book_id, chapter["title"], i + 1,
-                           chapter.get("start_page"), chapter.get("end_page"))
-
-                        text = pdf_processor.extract_chapter_text(
-                            file_path, chapter.get("start_page"), chapter.get("end_page")
-                        )
-
-                        chunks = chunker.chunk_text(text, chapter["title"])
-
-                        for chunk in chunks:
-                            chunk["chapter"] = chapter["title"]
-                            chunk["chapter_id"] = chapter_id
-                            chunk["book_id"] = book_id
-                            chunk["book_name"] = book_name
-                            all_chunks.append(chunk)
-
-                        chapters_info.append({
-                            "title": chapter["title"],
-                            "chapter_id": chapter_id
-                        })
-
-                        progress = 10 + (i / max(total_chapters, 1)) * 30
-                        task.update_state(state="PROCESSING", meta={
-                            "progress": progress,
-                            "stage": "chunking_fallback",
-                            "warning": f"Using fallback processor: {fallback_reason}",
-                            "chapters_total": total_chapters,
-                            "chapters_processed": i,
-                            "current_chapter": chapter["title"]
-                        })
-
-                logger.info(f"Fallback processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
+                logger.info(f"Fallback processor extracted {len(all_chunks)} chunks")
 
         logger.info(f"Total chunks to embed: {len(all_chunks)}")
 
