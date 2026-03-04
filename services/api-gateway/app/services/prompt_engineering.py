@@ -167,19 +167,30 @@ def get_enhanced_query_prompt(query: str, subject: str, available_books: List[st
 
 Guidelines for search queries:
 
-- Use domain-specific technical vocabulary and terminology
-- Include key theorems, laws, or principles by their formal names
+IMPORTANT - Query Length and Complexity:
+- When the user's question is simple and direct (e.g., "what are the models used?"), keep queries SHORT and CONCISE
+- Mirror the user's question style - if they ask simply, respond simply
+- Only use elaborate academic terminology when the user's question itself is complex or academic
+- Avoid generating long, jargon-heavy queries for basic factual questions
+- Each query should typically be 5-15 words, not full sentences with semicolons and extensive lists
+
+Query Generation Strategy:
+- For simple questions: Generate queries that closely match how the answer would appear in text
+  Example: "what are the models used?" → ["what are the models used", "the models used were", "models used in the article"]
+- For complex questions: Use domain-specific terminology and break down into components
+- Use formal academic terminology only when appropriate to the question's complexity
+- Include key theorems, laws, or principles by their formal names when specifically asked about them
 - Focus on foundational concepts as they would appear in academic texts
 - Target textbook sections and chapter topics using standard academic organization
 - Break down complex queries into simpler, core components
 - Use keywords that maximize relevant context retrieval
 - Try to find exactly what the user is looking for
-- The search queries should all be focused on the same topic, but they should be different.
-- It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books.
-- If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book".
-- If no specific book is mentioned or if the search should be performed across all available resources, use book="all".
-- Focus only on search term generation. Do not provide explanations or answers.
-- The subject of the conversation is {subject}.
+- The search queries should all be focused on the same topic, but they should be different
+- It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books
+- If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book"
+- If no specific book is mentioned or if the search should be performed across all available resources, use book="all"
+- Focus only on search term generation. Do not provide explanations or answers
+- The subject of the conversation is {subject}
 
 {conversation_context}
 
