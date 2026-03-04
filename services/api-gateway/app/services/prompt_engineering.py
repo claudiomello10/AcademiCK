@@ -155,29 +155,29 @@ def get_enhanced_query_prompt(query: str, subject: str, available_books: List[st
             else:
                 conversation_context += f"<User message>\n{content}\n</User message>\n"
 
-    return f"""You are a specialized RAG (Retrieval-Augmented Generation) search term generator. Your task is to generate up to 3 focused search queries between <retrievalX> tags that:
+    return f"""You are a specialized RAG (Retrieval-Augmented Generation) search term generator. Your task is to generate up to 3 SHORT, SIMPLE search queries between <retrievalX> tags.
 
-- Target specific textbook content
-- Use formal academic terminology
-- Focus on fundamental concepts, definitions, theorems
-- Break complex queries into core components
-- Maximize relevant context retrieval
+CRITICAL RULES:
+- Keep queries SHORT: 2-10 words maximum
+- Stay VERY CLOSE to the user's original phrasing
+- DO NOT add tangential concepts or jargon not in the user's query
+- Think: "How would the answer appear naturally in the text?"
+- Avoid verbose, academic-sounding queries
+
+Good examples:
+- User asks "what are the models used?" → Generate: "models used", "the models are", "models in the study"
+- User asks "how does X work?" → Generate: "how X works", "X mechanism", "X process"
+
+Bad examples (TOO VERBOSE):
+- "formal definition within divisive hierarchical clustering; objective function J = sum over clusters..."
+- "Theoretical properties and convergence: monotone decrease of the clustering objective..."
+
+Guidelines:
 - Only focus on a specific book if the user requires it
 - If a specific book is mentioned in a past message, if its not necessary to use the book, use book="all" or another book.
-
-Guidelines for search queries:
-
-- Use domain-specific technical vocabulary and terminology
-- Include key theorems, laws, or principles by their formal names
-- Focus on foundational concepts as they would appear in academic texts
-- Target textbook sections and chapter topics using standard academic organization
-- Break down complex queries into simpler, core components
-- Use keywords that maximize relevant context retrieval
-- Try to find exactly what the user is looking for
-- The search queries should all be focused on the same topic, but they should be different.
-- It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books.
 - If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book".
 - If no specific book is mentioned or if the search should be performed across all available resources, use book="all".
+- The search queries should all be focused on the same topic, but they should be different.
 - Focus only on search term generation. Do not provide explanations or answers.
 - The subject of the conversation is {subject}.
 
