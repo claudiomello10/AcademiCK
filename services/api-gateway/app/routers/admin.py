@@ -461,7 +461,7 @@ async def list_jobs(request: Request, session_id: str):
                 warning = None
 
                 # Sync with Celery for in-progress jobs
-                if status in ("queued", "processing") and celery_task_id:
+                if status in ("pending", "processing") and celery_task_id:
                     try:
                         response = await client.get(f"http://pdf-service:8003/job/{celery_task_id}")
                         if response.status_code == 200:
@@ -615,10 +615,11 @@ async def get_book_list(request: Request, session_id: str):
                 b.name,
                 COUNT(DISTINCT c.id) as total_chapters,
                 COALESCE(b.total_chunks, 0) as total_chunks,
-                b.processing_status
+                b.processing_status,
+                b.processing_method
             FROM books b
             LEFT JOIN chapters c ON b.id = c.book_id
-            GROUP BY b.id, b.name, b.total_chunks, b.processing_status
+            GROUP BY b.id, b.name, b.total_chunks, b.processing_status, b.processing_method
             ORDER BY b.name
         """)
 
@@ -627,7 +628,8 @@ async def get_book_list(request: Request, session_id: str):
                 "name": book["name"],
                 "total_chapters": book["total_chapters"],
                 "total_chunks": book["total_chunks"],
-                "processing_status": book["processing_status"]
+                "processing_status": book["processing_status"],
+                "processing_method": book["processing_method"]
             }
             for book in books
         ]
@@ -755,7 +757,7 @@ async def upload_pdfs(request: Request, session_id: str):
                             pg_job_id = await conn.fetchval("""
                                 INSERT INTO processing_jobs
                                     (job_type, status, progress, metadata, created_at)
-                                VALUES ('pdf_processing', 'queued', 0, $1, NOW())
+                                VALUES ('pdf_processing', 'pending', 0, $1, NOW())
                                 RETURNING id
                             """, json_lib.dumps({
                                 "celery_task_id": celery_task_id,
@@ -766,7 +768,7 @@ async def upload_pdfs(request: Request, session_id: str):
                             "filename": file.filename,
                             "job_id": str(pg_job_id),  # Return PostgreSQL job ID
                             "celery_task_id": celery_task_id,
-                            "status": "queued"
+                            "status": "pending"
                         })
                     else:
                         errors.append({
@@ -815,7 +817,7 @@ async def get_pdf_job_status(request: Request, session_id: str, job_id: str):
         filename = metadata.get("filename", "unknown")
 
         # If job is still in progress, query Celery for live status
-        if job["status"] in ("queued", "processing") and celery_task_id:
+        if job["status"] in ("pending", "processing") and celery_task_id:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(f"http://pdf-service:8003/job/{celery_task_id}")
@@ -946,7 +948,7 @@ async def cancel_job(request: Request, session_id: str, job_id: str):
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        if job["status"] not in ("queued", "processing"):
+        if job["status"] not in ("pending", "processing"):
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot cancel job with status '{job['status']}'"

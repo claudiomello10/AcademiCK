@@ -126,7 +126,8 @@ class QdrantManager:
                     "chapter_title": point.payload.get("chapter_title", ""),
                     "topic": point.payload.get("topic", ""),
                     "is_introduction": point.payload.get("is_introduction", False),
-                    "chunk_id": point.payload.get("chunk_id", "")
+                    "chunk_id": point.payload.get("chunk_id", ""),
+                    "page_number": point.payload.get("page_number")
                 }
                 for point in results.points
             ]
@@ -174,7 +175,8 @@ class QdrantManager:
                     "chapter_title": point.payload.get("chapter_title", ""),
                     "topic": point.payload.get("topic", ""),
                     "is_introduction": point.payload.get("is_introduction", False),
-                    "chunk_id": point.payload.get("chunk_id", "")
+                    "chunk_id": point.payload.get("chunk_id", ""),
+                    "page_number": point.payload.get("page_number")
                 }
                 for point in results
             ]

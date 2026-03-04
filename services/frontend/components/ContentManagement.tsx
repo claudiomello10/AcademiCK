@@ -31,6 +31,7 @@ interface BookInfo {
     total_chapters: number;
     total_chunks: number;
     processing_status?: string;
+    processing_method?: string;
 }
 
 interface ExpandedState {
@@ -299,9 +300,9 @@ const ContentManagement = () => {
                 const jobs: ProcessingJob[] = data.jobs.map((job: { filename: string; job_id: string; status: string }) => ({
                     filename: job.filename,
                     job_id: job.job_id,
-                    status: job.status || 'queued',
+                    status: job.status || 'pending',
                     progress: 0,
-                    stage: 'queued'
+                    stage: 'pending'
                 }));
 
                 if (data.errors && data.errors.length > 0) {
@@ -682,6 +683,7 @@ const ContentManagement = () => {
                                                 {job.status === 'completed' ? 'Complete' :
                                                  job.status === 'failed' ? 'Failed' :
                                                  job.status === 'cancelled' ? 'Cancelled' :
+                                                 job.status === 'pending' || job.stage === 'pending' ? 'Waiting for available worker...' :
                                                  job.chapters_total && job.chapters_total > 0 &&
                                                  (job.chapters_processed || 0) < job.chapters_total &&
                                                  !job.stage?.includes('embedding') &&
@@ -690,7 +692,7 @@ const ContentManagement = () => {
                                                     : job.stage ? job.stage.replace(/_/g, ' ') : 'Processing...'}
                                             </span>
                                             {/* Show Cancel button for in-progress jobs, Dismiss button for finished jobs */}
-                                            {(job.status === 'queued' || job.status === 'processing') ? (
+                                            {(job.status === 'pending' || job.status === 'processing') ? (
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"
@@ -840,6 +842,7 @@ const ContentManagement = () => {
                                                     <p><strong>Total Chapters:</strong> {book.total_chapters}</p>
                                                     <p><strong>Total Chunks:</strong> {book.total_chunks}</p>
                                                     <p><strong>Status:</strong> {book.processing_status === 'completed' ? 'Complete' : book.processing_status === 'processing' ? 'Processing...' : book.processing_status || 'Unknown'}</p>
+                                                    <p><strong>Processing Method:</strong> {book.processing_method === 'default' ? 'Default' : book.processing_method === 'docling' ? 'Docling (layout-based)' : 'Unknown'}</p>
                                                 </div>
                                             </div>
                                         )}

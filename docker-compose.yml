@@ -179,6 +179,7 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed
@@ -205,7 +206,7 @@ services:
       context: ./services/pdf-service
       dockerfile: Dockerfile
     container_name: academick-pdf-worker
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-2}
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
@@ -214,6 +215,7 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed

@@ -15,12 +15,11 @@ from qdrant_client.models import (
 
 from app.workers.celery_app import celery_app
 from app.config import settings
-from app.services.pdf_processor import PDFProcessor
 from app.services.chunker import TextChunker
 
 logger = logging.getLogger(__name__)
 
-# Try to import NLTK for original processor
+# Try to import NLTK for default processor
 try:
     import nltk
     nltk.download('punkt', quiet=True)
@@ -59,11 +58,90 @@ def process_pdf_task(self, file_path: str, book_name: str):
     return run_async(_process_pdf_async(self, file_path, book_name))
 
 
-async def _process_pdf_async(task, file_path: str, book_name: str):
-    """Async implementation of PDF processing with dual-method support.
+async def _process_docling_sections(
+    sections, book_name, book_id, pool, chunker, task, fallback_reason
+):
+    """
+    Insert chapter records and chunk text for each Docling-extracted section.
 
-    Tries the original LLM-based processor first, falls back to programmatic
-    processor if that fails.
+    Args:
+        sections: Output of DoclingPDFProcessor.process() — list of
+                  {chapter, topic, text, is_first_in_chapter, page} dicts.
+        book_name, book_id, pool, chunker, task, fallback_reason: as in caller.
+
+    Returns:
+        (all_chunks, chapter_ids, chapters_info) matching the existing fallback format.
+    """
+
+    # Group sections by chapter to create one DB chapter record per chapter title
+    chapter_order = []
+    chapters_by_title = {}
+    for section in sections:
+        title = section["chapter"]
+        if title not in chapters_by_title:
+            chapter_order.append(title)
+            chapters_by_title[title] = []
+        chapters_by_title[title].append(section)
+
+    total_chapters = len(chapter_order)
+    all_chunks = []
+    chapter_ids = {}
+    chapters_info = []
+
+    async with pool.acquire() as conn:
+        for i, chapter_title in enumerate(chapter_order):
+            chapter_id = str(uuid4())
+            chapter_ids[chapter_title] = chapter_id
+            chapter_sections = chapters_by_title[chapter_title]
+            start_page = chapter_sections[0].get("page") if chapter_sections else None
+
+            await conn.execute("""
+                INSERT INTO chapters (id, book_id, title, chapter_number, start_page)
+                VALUES ($1, $2, $3, $4, $5)
+            """, chapter_id, book_id, chapter_title, i + 1, start_page)
+            chapter_chunk_index = 0
+
+            for section in chapter_sections:
+                body_text = section["text"]
+                topic_override = section.get("topic", "")
+
+                raw_chunks = chunker.chunk_text(body_text, chapter_title)
+
+                for chunk in raw_chunks:
+                    # Use the Docling sub-heading as topic when available
+                    if topic_override:
+                        chunk["topic"] = topic_override
+                    chunk["chapter"] = chapter_title
+                    chunk["chapter_id"] = chapter_id
+                    chunk["book_id"] = book_id
+                    chunk["book_name"] = book_name
+                    chunk["page"] = section.get("page")
+                    # Mark first chunk of the whole chapter as introduction
+                    chunk["is_introduction"] = chapter_chunk_index == 0
+                    chunk["chunk_index"] = chapter_chunk_index
+                    all_chunks.append(chunk)
+                    chapter_chunk_index += 1
+
+            chapters_info.append({"title": chapter_title, "chapter_id": chapter_id})
+
+            progress = 10 + (i / max(total_chapters, 1)) * 30
+            task.update_state(state="PROCESSING", meta={
+                "progress": progress,
+                "stage": "chunking_docling",
+                "warning": f"Using Docling fallback: {fallback_reason}",
+                "chapters_total": total_chapters,
+                "chapters_processed": i,
+                "current_chapter": chapter_title
+            })
+
+    return all_chunks, chapter_ids, chapters_info
+
+
+async def _process_pdf_async(task, file_path: str, book_name: str):
+    """Async implementation of PDF processing with two-method support.
+
+    Tries the default LLM-based processor first, falls back to Docling
+    if that fails. If both fail, the job fails with an error.
     """
     # Initialize clients
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
@@ -99,6 +177,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
 
     # Track fallback status
     use_fallback = False
+    docling_succeeded = False
     fallback_reason = None
 
     try:
@@ -128,19 +207,19 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             if existing:
                 book_id = str(existing)
 
-        # Try original processing first (LLM-based chapter identification)
+        # Try default processing first (LLM-based chapter identification)
         all_chunks = []
         chapter_ids = {}
         chapters_info = []
 
         try:
-            from app.services.original_pdf_processor import OriginalPDFProcessor
+            from app.services.default_pdf_processor import DefaultPDFProcessor
 
             # Check if OpenAI API key is configured
             if not settings.openai_api_key:
                 raise ValueError("OpenAI API key not configured")
 
-            original_processor = OriginalPDFProcessor()
+            default_processor = DefaultPDFProcessor()
 
             task.update_state(state="PROCESSING", meta={
                 "progress": 5,
@@ -150,12 +229,12 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             })
 
             # Get chapter structure using LLM
-            summary_list = original_processor.get_summary_list_from_PDF(file_path, book_name)
+            summary_list = default_processor.get_summary_list_from_PDF(file_path, book_name)
             if not summary_list:
                 raise ValueError("No chapters identified by LLM")
 
             total_chapters = len(summary_list)
-            logger.info(f"Original processor identified {total_chapters} chapters")
+            logger.info(f"Default processor identified {total_chapters} chapters")
 
             task.update_state(state="PROCESSING", meta={
                 "progress": 10,
@@ -171,8 +250,10 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             reader = PdfReader(file_path)
             text_splitter = NLTKTextSplitter(
                 chunk_size=settings.chunk_size,
-                separator="\n",
-                chunk_overlap=settings.chunk_overlap
+                separator="",
+                chunk_overlap=settings.chunk_overlap,
+                add_start_index=True,
+                use_span_tokenize=True
             )
 
             async with pool.acquire() as conn:
@@ -197,8 +278,8 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "current_chapter": chapter_title
                     })
 
-                    # Process chapter using original processor's method
-                    chapter_chunks = original_processor.process_chapter(
+                    # Process chapter using default processor's method
+                    chapter_chunks = default_processor.process_chapter(
                         reader, chapter, idx, summary_list, book_name, text_splitter
                     )
 
@@ -212,95 +293,64 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "chapter_id": chapter_id
                     })
 
-            logger.info(f"Original processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
+            logger.info(f"Default processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
 
         except Exception as e:
             use_fallback = True
             fallback_reason = str(e)
-            logger.warning(f"Original processing failed, using fallback: {e}")
+            logger.warning(f"Default processing failed, using fallback: {e}")
 
-            # Fall back to programmatic processing
-            task.update_state(state="PROCESSING", meta={
-                "progress": 5,
-                "stage": "fallback_processing",
-                "warning": f"Using fallback processor: {fallback_reason}",
-                "chapters_total": 0,
-                "chapters_processed": 0
-            })
-
-            # Use the fallback processor
-            pdf_processor = PDFProcessor()
             chunker = TextChunker(
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
                 min_chunk_length=settings.min_chunk_length
             )
 
-            # Extract TOC and chapters programmatically
-            task.update_state(state="PROCESSING", meta={
-                "progress": 8,
-                "stage": "extracting_toc_fallback",
-                "warning": f"Using fallback processor: {fallback_reason}",
-                "chapters_total": 0,
-                "chapters_processed": 0
-            })
+            # ---------------------------------------------------------------
+            # Fallback 1: Docling layout-based processor
+            # ---------------------------------------------------------------
+            try:
+                from app.services.docling_pdf_processor import DoclingPDFProcessor
 
-            toc = pdf_processor.get_table_of_contents(file_path)
-            chapters_info_fallback = pdf_processor.analyze_chapters(toc, book_name)
-            total_chapters = len(chapters_info_fallback)
+                task.update_state(state="PROCESSING", meta={
+                    "progress": 5,
+                    "stage": "fallback_docling",
+                    "warning": f"Using Docling fallback: {fallback_reason}",
+                    "chapters_total": 0,
+                    "chapters_processed": 0
+                })
 
-            # Extract and chunk text
-            all_chunks = []
-            chapter_ids = {}
-            chapters_info = []
+                docling_processor = DoclingPDFProcessor()
+                raw_sections = docling_processor.process(file_path, book_name)
 
-            async with pool.acquire() as conn:
-                for i, chapter in enumerate(chapters_info_fallback):
-                    chapter_id = str(uuid4())
-                    chapter_ids[chapter["title"]] = chapter_id
-
-                    await conn.execute("""
-                        INSERT INTO chapters (id, book_id, title, chapter_number, start_page, end_page)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                    """, chapter_id, book_id, chapter["title"], i + 1,
-                       chapter.get("start_page"), chapter.get("end_page"))
-
-                    # Extract and chunk chapter text
-                    text = pdf_processor.extract_chapter_text(
-                        file_path, chapter.get("start_page"), chapter.get("end_page")
+                if raw_sections:
+                    all_chunks, chapter_ids, chapters_info = await _process_docling_sections(
+                        raw_sections, book_name, book_id, pool, chunker, task, fallback_reason
                     )
+                    docling_succeeded = True
+                    logger.info(f"Docling fallback extracted {len(all_chunks)} chunks")
 
-                    chunks = chunker.chunk_text(text, chapter["title"])
+            except Exception as de:
+                logger.error(f"Docling fallback also failed: {de}")
 
-                    for chunk in chunks:
-                        chunk["chapter"] = chapter["title"]
-                        chunk["chapter_id"] = chapter_id
-                        chunk["book_id"] = book_id
-                        chunk["book_name"] = book_name
-                        all_chunks.append(chunk)
+            if not docling_succeeded:
+                raise RuntimeError(
+                    f"All processing methods failed. Default: {fallback_reason}. "
+                    f"Docling also failed to extract structure."
+                )
 
-                    chapters_info.append({
-                        "title": chapter["title"],
-                        "chapter_id": chapter_id
-                    })
-
-                    progress = 10 + (i / max(total_chapters, 1)) * 30
-                    task.update_state(state="PROCESSING", meta={
-                        "progress": progress,
-                        "stage": "chunking_fallback",
-                        "warning": f"Using fallback processor: {fallback_reason}",
-                        "chapters_total": total_chapters,
-                        "chapters_processed": i,
-                        "current_chapter": chapter["title"]
-                    })
-
-            logger.info(f"Fallback processor extracted {len(all_chunks)} chunks from {total_chapters} chapters")
+        # Determine processing method and warning
+        if not use_fallback:
+            processing_method = "default"
+            warning_msg = None
+        else:
+            processing_method = "docling"
+            warning_msg = f"Using Docling fallback: {fallback_reason}"
 
         logger.info(f"Total chunks to embed: {len(all_chunks)}")
 
         # Generate embeddings in batches
         total_chapters = len(chapters_info)
-        warning_msg = f"Using fallback processor: {fallback_reason}" if use_fallback else None
 
         task.update_state(state="PROCESSING", meta={
             "progress": 40,
@@ -360,6 +410,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "topic": chunk.get("topic", ""),
                         "text": chunk["text"],
                         "is_introduction": chunk.get("is_introduction", False),
+                        "page_number": chunk.get("page"),
                         "created_at": datetime.utcnow().isoformat()
                     }
                 ))
@@ -372,6 +423,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     "text": chunk["text"],
                     "topic": chunk.get("topic", ""),
                     "is_introduction": chunk.get("is_introduction", False),
+                    "page_number": chunk.get("page"),
                     "char_count": len(chunk["text"])
                 })
 
@@ -419,11 +471,12 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 await conn.execute("""
                     INSERT INTO chunks
                     (id, book_id, chapter_id, qdrant_point_id, text, topic,
-                     is_introduction, char_count, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                     is_introduction, page_number, char_count, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """, chunk["id"], chunk["book_id"], chunk["chapter_id"],
                    chunk["qdrant_point_id"], clean_text, clean_topic,
-                   chunk["is_introduction"], len(clean_text), datetime.utcnow())
+                   chunk["is_introduction"], chunk.get("page_number"),
+                   len(clean_text), datetime.utcnow())
 
             # Update book status
             await conn.execute("""
@@ -431,9 +484,10 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 SET processing_status = 'completed',
                     total_chunks = $1,
                     processed_at = $2,
-                    updated_at = $2
+                    updated_at = $2,
+                    processing_method = $4
                 WHERE id = $3
-            """, len(chunks_for_db), datetime.utcnow(), book_id)
+            """, len(chunks_for_db), datetime.utcnow(), book_id, processing_method)
 
             # Update chapter chunk counts
             for chapter_title, chapter_id in chapter_ids.items():
@@ -460,6 +514,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
             "book_name": book_name,
             "chunks_processed": len(chunks_for_db),
             "chapters_processed": len(chapters_info),
+            "processing_method": processing_method,
             "used_fallback": use_fallback,
             "fallback_reason": fallback_reason
         }

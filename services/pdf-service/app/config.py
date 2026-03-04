@@ -44,6 +44,7 @@ class Settings(BaseSettings):
 
     # OpenAI for TOC analysis
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    pdf_chapter_detection_model: str = os.getenv("PDF_CHAPTER_DETECTION_MODEL", "gpt-5-nano")
 
     # Processing settings
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "3000"))

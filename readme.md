@@ -21,7 +21,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 - **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with Reciprocal Rank Fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
 - **Multi-Provider LLM** — Choose between OpenAI, Anthropic, or DeepSeek models per query
-- **PDF Processing Pipeline** — Dual-method processing with LLM-based chapter detection and programmatic fallback
+- **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
 - **Admin Dashboard** — Content management, user management, and usage statistics
 - **Fully Dockerized** — One command to start 11 services with health checks and auto-restart
@@ -117,7 +117,7 @@ Use the credentials you set in `.env`:
 
 ## Configuration
 
-Key settings in `.env` (see [.env.example](.env.example) for the full list):
+Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](docs/USAGE.md) for the full list):
 
 | Variable              | Required     | Description                                        |
 | --------------------- | ------------ | -------------------------------------------------- |
@@ -131,7 +131,10 @@ Key settings in `.env` (see [.env.example](.env.example) for the full list):
 | `DEEPSEEK_API_KEY`  | At least one | DeepSeek API key                                   |
 | `DEFAULT_SUBJECT`   | No           | Academic subject (default: Machine Learning)       |
 | `DEFAULT_MODEL`     | No           | Default LLM model (default: gpt-5-mini)            |
-| `EMBEDDING_DEVICE`  | No           | Embedding device:`gpu` or `cpu` (default: gpu) |
+| `EMBEDDING_DEVICE`  | No           | Embedding device: `gpu` or `cpu` (default: gpu)    |
+| `CHUNK_SIZE`        | No           | Chunk size in chars for PDF processing (default: 3000) |
+| `CELERY_WORKER_CONCURRENCY` | No   | Parallel PDF processing workers (default: 2)       |
+| `OMP_NUM_THREADS`   | No           | OpenMP threads for Docling/PyTorch (default: 4)    |
 | `DOCS_ENABLED`      | No           | Enable Swagger UI (default: true)                  |
 
 ## Services
