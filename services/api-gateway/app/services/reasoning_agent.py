@@ -1,6 +1,7 @@
 """Curation Agent for Agentic RAG — evaluates and curates retrieved context."""
 
 import re
+import time
 import hashlib
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -29,6 +30,8 @@ class AgentResult:
     iterations_used: int
     reasoning_trace: List[str]
     total_agent_tokens: int
+    total_agent_searches: int
+    agent_time_ms: float
 
 
 def _fail_safe_approve(num_chunks: int, reason: str) -> AgentAction:
@@ -242,7 +245,9 @@ class CurationAgent:
                 final_chunks=initial_chunks,
                 iterations_used=0,
                 reasoning_trace=[f"Agent error: {e}"],
-                total_agent_tokens=0
+                total_agent_tokens=0,
+                total_agent_searches=0,
+                agent_time_ms=0.0
             )
 
     async def _run_loop(
@@ -254,9 +259,11 @@ class CurationAgent:
         conversation_history: Optional[List[Dict]],
         top_k: int
     ) -> AgentResult:
+        agent_start_time = time.time()
         context_pool = list(initial_chunks)
         reasoning_trace = []
         total_agent_tokens = 0
+        total_agent_searches = 0
         max_iterations = settings.agent_max_iterations
 
         # Get available books for the prompt and book name matching
@@ -322,15 +329,20 @@ class CurationAgent:
                     intent=intent,
                     top_k=top_k
                 )
+                total_agent_searches += len(action.new_queries)
                 context_pool = self._merge_and_deduplicate(
                     context_pool, new_results
                 )
+
+        agent_time_ms = (time.time() - agent_start_time) * 1000
 
         return AgentResult(
             final_chunks=context_pool,
             iterations_used=iteration,
             reasoning_trace=reasoning_trace,
-            total_agent_tokens=total_agent_tokens
+            total_agent_tokens=total_agent_tokens,
+            total_agent_searches=total_agent_searches,
+            agent_time_ms=agent_time_ms
         )
 
     def _merge_and_deduplicate(

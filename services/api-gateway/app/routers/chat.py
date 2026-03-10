@@ -56,7 +56,11 @@ async def track_usage(
     model_used: str,
     intent: str,
     success: bool = True,
-    tokens_consumed: Optional[int] = None
+    tokens_consumed: Optional[int] = None,
+    agent_iterations: int = 0,
+    agent_tokens: int = 0,
+    agent_searches: int = 0,
+    agent_time_ms: int = 0
 ):
     """Insert usage stats into PostgreSQL."""
     try:
@@ -73,8 +77,10 @@ async def track_usage(
             await conn.execute(
                 """
                 INSERT INTO usage_stats
-                    (user_id, session_id, action_type, response_time_ms, model_used, intent, success, tokens_consumed)
-                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)
+                    (user_id, session_id, action_type, response_time_ms, model_used,
+                     intent, success, tokens_consumed,
+                     agent_iterations, agent_tokens, agent_searches, agent_time_ms)
+                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 """,
                 user_id,
                 session_id,
@@ -83,7 +89,11 @@ async def track_usage(
                 model_used,
                 intent,
                 success,
-                tokens_consumed
+                tokens_consumed,
+                agent_iterations,
+                agent_tokens,
+                agent_searches,
+                agent_time_ms
             )
     except Exception as e:
         logger.warning(f"Failed to track usage stats: {e}")
@@ -169,7 +179,11 @@ async def chat(
         response_time_ms=result["processing_time_ms"],
         model_used=result["model_used"],
         intent=result["intent"],
-        tokens_consumed=result.get("tokens_used")
+        tokens_consumed=result.get("tokens_used"),
+        agent_iterations=result.get("agent_iterations", 0),
+        agent_tokens=result.get("agent_tokens", 0),
+        agent_searches=result.get("agent_searches", 0),
+        agent_time_ms=int(result.get("agent_time_ms", 0)),
     )
 
     return ChatResponse(
@@ -177,7 +191,9 @@ async def chat(
         intent=result["intent"],
         sources=[SourceChunk(**s) for s in result["sources"]],
         model_used=result["model_used"],
-        processing_time_ms=result["processing_time_ms"]
+        processing_time_ms=result["processing_time_ms"],
+        agent_iterations=result.get("agent_iterations"),
+        reasoning_trace=result.get("reasoning_trace") if settings.agent_debug_trace else None,
     )
 
 
@@ -219,7 +235,11 @@ async def chat_single(
         response_time_ms=result["processing_time_ms"],
         model_used=result["model_used"],
         intent=result["intent"],
-        tokens_consumed=result.get("tokens_used")
+        tokens_consumed=result.get("tokens_used"),
+        agent_iterations=result.get("agent_iterations", 0),
+        agent_tokens=result.get("agent_tokens", 0),
+        agent_searches=result.get("agent_searches", 0),
+        agent_time_ms=int(result.get("agent_time_ms", 0)),
     )
 
     return ChatResponse(
@@ -227,7 +247,9 @@ async def chat_single(
         intent=result["intent"],
         sources=[SourceChunk(**s) for s in result["sources"]],
         model_used=result["model_used"],
-        processing_time_ms=result["processing_time_ms"]
+        processing_time_ms=result["processing_time_ms"],
+        agent_iterations=result.get("agent_iterations"),
+        reasoning_trace=result.get("reasoning_trace") if settings.agent_debug_trace else None,
     )
 
 

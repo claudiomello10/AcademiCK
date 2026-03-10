@@ -13,6 +13,7 @@ from app.clients.qdrant_client import QdrantManager
 from app.services.search_service import SearchService
 from app.services.llm_service import LLMService
 from app.services.prompt_engineering import get_rag_system_prompt, get_enhanced_query_prompt
+from app.services.reasoning_agent import CurationAgent
 from redis import asyncio as aioredis
 from app.config import settings
 
@@ -205,11 +206,31 @@ class RAGOrchestrator:
             top_k=top_k
         )
 
-        # Step 4: Build prompt with context
+        # Step 4: Agentic context curation (if enabled)
+        agent_result = None
+        if settings.agent_enabled and search_results:
+            agent = CurationAgent(
+                search_service=self.search_service,
+                llm_service=self.llm_service,
+                qdrant=self.qdrant
+            )
+            agent_result = await agent.run(
+                query=query,
+                intent=intent,
+                subject=subject,
+                initial_chunks=search_results,
+                conversation_history=conversation_history,
+                top_k=top_k
+            )
+            curated_chunks = agent_result.final_chunks
+        else:
+            curated_chunks = search_results
+
+        # Step 5: Build prompt with context
         system_prompt = get_rag_system_prompt(
             intent=intent,
             subject=subject,
-            context_chunks=search_results
+            context_chunks=curated_chunks
         )
 
         # Build messages
@@ -277,12 +298,17 @@ class RAGOrchestrator:
                     "topic": chunk.get("topic"),
                     "score": chunk["score"]
                 }
-                for chunk in search_results
+                for chunk in curated_chunks
             ],
             # Full search results with IDs for chunk retrieval tracking (analytics)
             "search_results": search_results,
             "model_used": model or "gpt-5-nano",
-            "processing_time_ms": processing_time
+            "processing_time_ms": processing_time,
+            "agent_iterations": agent_result.iterations_used if agent_result else 0,
+            "agent_tokens": agent_result.total_agent_tokens if agent_result else 0,
+            "agent_searches": agent_result.total_agent_searches if agent_result else 0,
+            "agent_time_ms": agent_result.agent_time_ms if agent_result else 0,
+            "reasoning_trace": agent_result.reasoning_trace if agent_result else [],
         }
 
     async def process_single_query(

@@ -207,6 +207,10 @@ CREATE TABLE IF NOT EXISTS usage_stats (
     tokens_consumed INTEGER,
     intent VARCHAR(100),
     success BOOLEAN DEFAULT true,
+    agent_iterations INTEGER DEFAULT 0,
+    agent_tokens INTEGER DEFAULT 0,
+    agent_searches INTEGER DEFAULT 0,
+    agent_time_ms INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     metadata JSONB DEFAULT '{}'
 );
