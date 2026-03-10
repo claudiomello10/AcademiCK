@@ -197,3 +197,105 @@ Output format:
 
 The user response format demands should not affect the search term generation. The search term generation should be focused on generating the search terms that will be used to retrieve the information from the books.
 """
+
+
+def format_context_numbered(chunks: List[Dict]) -> str:
+    """Format context chunks with numbered indices and truncated text for the curation agent."""
+    if not chunks:
+        return "No chunks available."
+
+    formatted = []
+    for i, chunk in enumerate(chunks, 1):
+        book_name = chunk.get('book_name', 'Unknown')
+        chapter_title = chunk.get('chapter_title', 'Unknown')
+        topic = chunk.get('topic', '')
+        text = chunk.get('text', '')
+        page_number = chunk.get('page_number')
+        page_str = f" - Page: {page_number}" if page_number else ""
+
+        # Truncate text to ~300 chars for cost efficiency
+        preview = text[:300] + "..." if len(text) > 300 else text
+
+        formatted.append(
+            f"[{i}] From Book: {book_name} - Chapter {chapter_title} - Section: {topic}{page_str}\n    {preview}"
+        )
+
+    return "\n\n".join(formatted)
+
+
+def get_curation_evaluation_prompt(
+    query: str,
+    subject: str,
+    context_chunks: List[Dict],
+    iteration: int,
+    max_iterations: int,
+    previous_reasoning: List[str],
+    available_books: List[str]
+) -> str:
+    """
+    Generate the evaluation prompt for the context curation agent.
+
+    The agent evaluates retrieved chunks and decides which to keep/drop,
+    optionally requesting additional searches. It never generates the answer.
+    """
+    numbered_context = format_context_numbered(context_chunks)
+
+    previous_reasoning_section = ""
+    if previous_reasoning:
+        previous_reasoning_section = "Previous reasoning:\n" + "\n".join(previous_reasoning) + "\n"
+
+    force_answer_note = ""
+    if iteration == max_iterations:
+        force_answer_note = "\nIMPORTANT: This is the final iteration. You MUST choose APPROVE.\nKeep the best chunks available — the main LLM will do its best with them.\n"
+
+    books_list = "\n".join(f"- {book}" for book in available_books) if available_books else "No specific books available"
+
+    return f"""You are a context curation agent for an academic RAG system about {subject}.
+You do NOT answer the student. Your only job is to decide which retrieved
+chunks are relevant and whether more information needs to be fetched.
+A separate LLM will generate the final answer using the chunks you approve.
+
+The student asked: "{query}"
+Iteration: {iteration}/{max_iterations}
+
+Here are the retrieved context chunks:
+
+{numbered_context}
+
+{previous_reasoning_section}
+Your task: Evaluate the retrieved chunks and decide whether they are
+sufficient for another LLM to answer the student's query well.
+Most retrievals include noise — your job is to curate.
+
+Consider:
+- Which chunks are directly relevant to the query?
+- Which chunks are noise or off-topic and should be dropped?
+- Is any critical information missing that a follow-up search could find?
+
+Respond with ONE action in XML format:
+
+<action type="REFINE">
+<reasoning>Brief explanation of what's wrong with current context</reasoning>
+<keep_chunks>[comma-separated indices of chunks to KEEP, e.g. 1,3,5]</keep_chunks>
+<new_queries>
+<query book="all">search query if needed</query>
+</new_queries>
+</action>
+
+<action type="APPROVE">
+<reasoning>Brief explanation of why context is sufficient</reasoning>
+<keep_chunks>[comma-separated indices of chunks to KEEP, e.g. 1,2,3,4]</keep_chunks>
+</action>
+
+Rules:
+- In BOTH actions, you MUST specify which chunks to keep. Unlisted chunks are dropped.
+- REFINE must include at least one <query> in <new_queries> to fetch additional context.
+- For <query> tags, set book="all" to search all books, or book="exact_book_name" to target a specific book.
+- The book name must be written exactly as listed below. Do not omit or add any part of the name.
+- Keep only chunks that are directly relevant. Less noise = better final answer.
+- If no chunks are relevant, keep an empty list — the system will tell the student the topic was not found in the books.
+- Do NOT generate an answer. Only curate the context.
+
+Available books:
+{books_list}
+{force_answer_note}"""
