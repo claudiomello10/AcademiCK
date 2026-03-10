@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     search_weight_searching_dense: float = float(os.getenv("SEARCH_WEIGHT_SEARCHING_DENSE", "0.5"))
     search_weight_searching_sparse: float = float(os.getenv("SEARCH_WEIGHT_SEARCHING_SPARSE", "0.5"))
 
+    # Agentic RAG (context curation)
+    agent_enabled: bool = os.getenv("AGENT_ENABLED", "true").lower() == "true"
+    agent_max_iterations: int = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
+    agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "gpt-5-nano")
+    agent_curation_temperature: float = float(os.getenv("AGENT_CURATION_TEMPERATURE", "0.2"))
+    agent_max_context_chunks: int = int(os.getenv("AGENT_MAX_CONTEXT_CHUNKS", "18"))
+    agent_debug_trace: bool = os.getenv("AGENT_DEBUG_TRACE", "false").lower() == "true"
+
     # Default subject for new sessions
     default_subject: str = os.getenv("DEFAULT_SUBJECT", "Machine Learning")
 
