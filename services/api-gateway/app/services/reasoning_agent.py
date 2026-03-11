@@ -98,7 +98,9 @@ def _extract_action_type(response_text: str) -> Optional[str]:
             return resolved
 
     # 3. Scan raw text for keywords as last resort before fail-safe
-    text_upper = response_text.upper()
+    # Strip reasoning content to avoid false positives from words like "disapprove" or "refined"
+    stripped = re.sub(r'<reasoning>.*?</reasoning>', '', response_text, flags=re.DOTALL)
+    text_upper = stripped.upper()
     has_approve = "APPROVE" in text_upper or "APPROV" in text_upper
     has_refine = "REFINE" in text_upper or "REFIN" in text_upper
     if has_approve and not has_refine:
