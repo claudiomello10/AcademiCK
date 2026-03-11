@@ -10,6 +10,7 @@ import logging
 
 from app.config import settings
 from app.services.prompt_engineering import get_curation_evaluation_prompt
+from app.utils.matching import match_book_name
 
 logger = logging.getLogger(__name__)
 
@@ -161,49 +162,6 @@ def parse_agent_action(response_text: str, num_chunks: int) -> AgentAction:
         return _fail_safe_approve(num_chunks, "Parse failure — keeping all chunks")
 
 
-def _match_book_name(
-    book_name: str,
-    available_books: List[str],
-    threshold: float = 0.6
-) -> Optional[str]:
-    """
-    Match an LLM-produced book name to the closest available book
-    using character-level similarity.
-
-    Returns the best matching book name, or None if no match above threshold.
-    """
-    if not book_name or not available_books:
-        return None
-
-    # Exact match first
-    if book_name in available_books:
-        return book_name
-
-    # Character-level similarity matching
-    book_lower = book_name.lower()
-    best_match = None
-    best_ratio = 0.0
-
-    for book in available_books:
-        ratio = SequenceMatcher(None, book_lower, book.lower()).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_match = book
-
-    if best_ratio >= threshold:
-        logger.info(
-            f"[CurationAgent] Fuzzy matched book '{book_name}' -> '{best_match}' "
-            f"(similarity: {best_ratio:.2f})"
-        )
-        return best_match
-
-    logger.warning(
-        f"[CurationAgent] No book match for '{book_name}' "
-        f"(best: '{best_match}', similarity: {best_ratio:.2f})"
-    )
-    return None
-
-
 class CurationAgent:
     """
     Curation agent that evaluates retrieved context,
@@ -322,7 +280,7 @@ class CurationAgent:
             if action.new_queries:
                 for q in action.new_queries:
                     if q.get("book") is not None:
-                        q["book"] = _match_book_name(q["book"], available_books)
+                        q["book"] = match_book_name(q["book"], available_books)
 
                 new_results = await self.search_service.search_with_enhanced_queries(
                     queries=action.new_queries,
