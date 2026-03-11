@@ -239,7 +239,8 @@ class CurationAgent:
                 iteration=iteration,
                 max_iterations=max_iterations,
                 previous_reasoning=reasoning_trace,
-                available_books=available_books
+                available_books=available_books,
+                conversation_history=conversation_history
             )
 
             # Call LLM for evaluation

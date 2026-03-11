@@ -230,7 +230,8 @@ def get_curation_evaluation_prompt(
     iteration: int,
     max_iterations: int,
     previous_reasoning: List[str],
-    available_books: List[str]
+    available_books: List[str],
+    conversation_history: Optional[List[Dict]] = None
 ) -> str:
     """
     Generate the evaluation prompt for the context curation agent.
@@ -250,11 +251,27 @@ def get_curation_evaluation_prompt(
 
     books_list = "\n".join(f"- {book}" for book in available_books) if available_books else "No specific books available"
 
+    conversation_section = ""
+    if conversation_history:
+        recent = conversation_history[-6:]
+        formatted_msgs = []
+        for msg in recent:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "assistant":
+                formatted_msgs.append(f"<Assistant message>\n{content}\n</Assistant message>")
+            else:
+                formatted_msgs.append(f"<User message>\n{content}\n</User message>")
+        conversation_section = (
+            "\nRecent conversation (use this to resolve references like \"that\", \"it\", \"the previous topic\"):\n"
+            + "\n".join(formatted_msgs) + "\n"
+        )
+
     return f"""You are a context curation agent for an academic RAG system about {subject}.
 You do NOT answer the student. Your only job is to decide which retrieved
 chunks are relevant and whether more information needs to be fetched.
 A separate LLM will generate the final answer using the chunks you approve.
-
+{conversation_section}
 The student asked: "{query}"
 Iteration: {iteration}/{max_iterations}
 
