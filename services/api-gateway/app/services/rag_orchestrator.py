@@ -230,7 +230,7 @@ class RAGOrchestrator:
                     f"Empty LLM response after retry: "
                     f"model={model}, intent={intent}"
                 )
-                response = "Desculpe, não consegui gerar uma resposta. Por favor, tente novamente."
+                response = "I apologize, but I was unable to generate a response. Please try again."
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             response = "I apologize, but I encountered an error generating a response. Please try again."
