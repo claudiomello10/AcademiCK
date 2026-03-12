@@ -169,6 +169,7 @@ def get_enhanced_query_prompt(query: str, subject: str, available_books: List[st
 
 Guidelines for search queries:
 
+- Before generating the search queries, write a <resolved_query> that restates the student's question with all references resolved (e.g., "that", "it", "the previous topic") using the conversation history. If the query is already self-contained, repeat it as-is.
 - Use domain-specific technical vocabulary and terminology
 - Include key theorems, laws, or principles by their formal names
 - Focus on foundational concepts as they would appear in academic texts
@@ -187,6 +188,7 @@ Guidelines for search queries:
 {conversation_context}
 
 Output format:
+<resolved_query>the student's question with all references resolved</resolved_query>
 <retrieval1 book="all">search query 1</retrieval1>
 <retrieval2 book="book_name">search query 2</retrieval2>
 <retrieval3 book="book_name">search query 3</retrieval3>
@@ -230,14 +232,16 @@ def get_curation_evaluation_prompt(
     iteration: int,
     max_iterations: int,
     previous_reasoning: List[str],
-    available_books: List[str],
-    conversation_history: Optional[List[Dict]] = None
+    available_books: List[str]
 ) -> str:
     """
     Generate the evaluation prompt for the context curation agent.
 
     The agent evaluates retrieved chunks and decides which to keep/drop,
     optionally requesting additional searches. It never generates the answer.
+
+    The query should already have references resolved (e.g., "explain that further"
+    becomes "explain backpropagation further") by the query enhancement step.
     """
     numbered_context = format_context_numbered(context_chunks)
 
@@ -251,27 +255,11 @@ def get_curation_evaluation_prompt(
 
     books_list = "\n".join(f"- {book}" for book in available_books) if available_books else "No specific books available"
 
-    conversation_section = ""
-    if conversation_history:
-        recent = conversation_history[-6:]
-        formatted_msgs = []
-        for msg in recent:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "assistant":
-                formatted_msgs.append(f"<Assistant message>\n{content}\n</Assistant message>")
-            else:
-                formatted_msgs.append(f"<User message>\n{content}\n</User message>")
-        conversation_section = (
-            "\nRecent conversation (use this to resolve references like \"that\", \"it\", \"the previous topic\"):\n"
-            + "\n".join(formatted_msgs) + "\n"
-        )
-
     return f"""You are a context curation agent for an academic RAG system about {subject}.
 You do NOT answer the student. Your only job is to decide which retrieved
 chunks are relevant and whether more information needs to be fetched.
 A separate LLM will generate the final answer using the chunks you approve.
-{conversation_section}
+
 The student asked: "{query}"
 Iteration: {iteration}/{max_iterations}
 

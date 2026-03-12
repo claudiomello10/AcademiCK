@@ -44,13 +44,14 @@ class RAGOrchestrator:
         query: str,
         subject: str,
         conversation_history: Optional[List[Dict]] = None
-    ) -> List[Dict[str, Optional[str]]]:
+    ) -> Dict[str, Any]:
         """
         Generate multiple focused search queries from the user query.
         Uses a fast model (GPT-5 Nano) for query enhancement.
 
         Returns:
-            List of {"query": str, "book": Optional[str]}
+            Dict with "retrievals" (list of {"query": str, "book": Optional[str]})
+            and "resolved_query" (str with references resolved from conversation context)
         """
         try:
             # Get available books
@@ -100,12 +101,26 @@ class RAGOrchestrator:
                         retrieval["book"], available_books
                     )
 
-            logger.info(f"Generated {len(retrievals)} enhanced queries: {retrievals}")
-            return retrievals if retrievals else [{"query": query, "book": None}]
+            # Extract resolved query (references resolved from conversation context)
+            resolved_match = re.search(r'<resolved_query>(.*?)</resolved_query>', response, re.DOTALL)
+            resolved_query = resolved_match.group(1).strip() if resolved_match else query
+
+            logger.info(
+                f"Generated {len(retrievals)} enhanced queries:\n"
+                f"Resolved query: '{resolved_query}'\n"
+                f"Retrievals: {retrievals}"
+            )
+            return {
+                "retrievals": retrievals if retrievals else [{"query": query, "book": None}],
+                "resolved_query": resolved_query
+            }
 
         except Exception as e:
             logger.warning(f"Query enhancement failed, using original query: {e}")
-            return [{"query": query, "book": None}]
+            return {
+                "retrievals": [{"query": query, "book": None}],
+                "resolved_query": query
+            }
 
     async def process_query(
         self,
@@ -148,7 +163,9 @@ class RAGOrchestrator:
         top_k = settings.top_k_searching if intent == "searching_for_information" else settings.top_k_default
 
         # Wait for enhanced queries
-        enhanced_queries = await enhanced_queries_task
+        enhancement_result = await enhanced_queries_task
+        enhanced_queries = enhancement_result["retrievals"]
+        resolved_query = enhancement_result["resolved_query"]
 
         # Step 3: Search with enhanced queries
         search_results = await self.search_service.search_with_enhanced_queries(
@@ -166,11 +183,10 @@ class RAGOrchestrator:
                 qdrant=self.qdrant
             )
             agent_result = await agent.run(
-                query=query,
+                query=resolved_query,
                 intent=intent,
                 subject=subject,
                 initial_chunks=search_results,
-                conversation_history=conversation_history,
                 top_k=top_k
             )
             curated_chunks = agent_result.final_chunks

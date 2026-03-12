@@ -182,11 +182,13 @@ class CurationAgent:
         intent: str,
         subject: str,
         initial_chunks: List[Dict],
-        conversation_history: Optional[List[Dict]],
         top_k: int
     ) -> AgentResult:
         """
         Run the curation loop over retrieved chunks.
+
+        Args:
+            query: The resolved query (references already resolved by the query enhancement step).
 
         Returns curated chunks for the main LLM, plus metadata.
         """
@@ -196,7 +198,6 @@ class CurationAgent:
                 intent=intent,
                 subject=subject,
                 initial_chunks=initial_chunks,
-                conversation_history=conversation_history,
                 top_k=top_k
             )
         except Exception as e:
@@ -216,7 +217,6 @@ class CurationAgent:
         intent: str,
         subject: str,
         initial_chunks: List[Dict],
-        conversation_history: Optional[List[Dict]],
         top_k: int
     ) -> AgentResult:
         agent_start_time = time.time()
@@ -239,8 +239,7 @@ class CurationAgent:
                 iteration=iteration,
                 max_iterations=max_iterations,
                 previous_reasoning=reasoning_trace,
-                available_books=available_books,
-                conversation_history=conversation_history
+                available_books=available_books
             )
 
             # Call LLM for evaluation
