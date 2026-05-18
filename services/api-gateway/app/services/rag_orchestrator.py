@@ -19,7 +19,6 @@ from app.clients.intent_client import IntentClient
 from app.clients.embedding_client import EmbeddingClient
 from app.clients.qdrant_client import QdrantManager
 from app.services.search_service import SearchService
-from app.services.llm_service import LLMService
 from app.services.agent_models import build_model
 from app.services.prompt_engineering import (
     get_rag_system_prompt,
@@ -92,7 +91,6 @@ class RAGOrchestrator:
             embedding_client=embedding_client,
             redis=redis
         )
-        self.llm_service = LLMService()
 
     async def _generate_enhanced_queries(
         self,
@@ -218,58 +216,43 @@ class RAGOrchestrator:
         else:
             curated_chunks = search_results
 
-        # Step 5: Build prompt with context
+        # Step 5: Generate final answer via Pydantic AI
         system_prompt = get_rag_system_prompt(
             intent=intent,
             subject=subject,
             context_chunks=curated_chunks
         )
+        model_name = model or settings.default_model
+        answer_agent = Agent(
+            model=build_model(model_name, settings.rag_reasoning),
+            output_type=str,
+            system_prompt=system_prompt,
+        )
+        history = _to_pydantic_ai_history(conversation_history)
 
-        # Build messages
-        messages = [{"role": "system", "content": system_prompt}]
-
-        # Add conversation history (last few messages for context)
-        if conversation_history:
-            for msg in conversation_history[-6:]:  # Last 6 messages
-                if msg.get("role") in ["user", "assistant"]:
-                    messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
-
-        # Add current query
-        messages.append({"role": "user", "content": query})
-
-        # Step 5: Generate response
-        tokens_used = None
+        response: str = ""
+        tokens_used: Optional[int] = None
         try:
-            llm_result = await self.llm_service.generate(
-                messages=messages,
-                model=model,
-                reasoning_effort=settings.rag_reasoning
-            )
-            response = llm_result["text"]
-            tokens_used = llm_result.get("total_tokens")
+            result = await answer_agent.run(query, message_history=history)
+            response = result.output or ""
+            usage = result.usage()
+            tokens_used = usage.total_tokens if usage else None
 
-            # Retry once if response is empty
+            # Retry once if the model returned nothing
             if not response:
                 logger.warning(
                     f"Empty LLM response on first attempt, retrying: "
-                    f"model={model}, intent={intent}"
+                    f"model={model_name}, intent={intent}"
                 )
-                llm_result = await self.llm_service.generate(
-                    messages=messages,
-                    model=model,
-                    reasoning_effort=settings.rag_reasoning
-                )
-                response = llm_result["text"]
-                tokens_used = llm_result.get("total_tokens")
+                result = await answer_agent.run(query, message_history=history)
+                response = result.output or ""
+                usage = result.usage()
+                tokens_used = usage.total_tokens if usage else None
 
-            # Fallback if still empty after retry
             if not response:
                 logger.error(
                     f"Empty LLM response after retry: "
-                    f"model={model}, intent={intent}"
+                    f"model={model_name}, intent={intent}"
                 )
                 response = "I apologize, but I was unable to generate a response. Please try again."
         except Exception as e:
@@ -294,7 +277,7 @@ class RAGOrchestrator:
             ],
             # Full search results with IDs for chunk retrieval tracking (analytics)
             "search_results": search_results,
-            "model_used": model or "gpt-5-nano",
+            "model_used": model_name,
             "processing_time_ms": processing_time,
             "agent_iterations": agent_result.iterations_used if agent_result else 0,
             "agent_tokens": agent_result.total_agent_tokens if agent_result else 0,
