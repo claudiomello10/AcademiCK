@@ -56,8 +56,24 @@ Response:
 
 ### Send a Query
 
+The main chat endpoint streams its response as Server-Sent Events. The
+stream emits `status` events for each pipeline stage (intent, enhancing,
+searching, curating, generating), `token` events for incremental
+answer deltas, a final `done` event with the full payload, and `error`
+on failure (no messages are persisted in that case).
+
 ```bash
-curl -X POST http://localhost/api/v1/chat/{session_id} \
+curl -N -X POST http://localhost/api/v1/chat/{session_id} \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"query": "What is gradient descent?"}'
+```
+
+For one-shot JSON without conversation history (no streaming), use the
+`/single` endpoint which still returns a single `ChatResponse`:
+
+```bash
+curl -X POST http://localhost/api/v1/chat/{session_id}/single \
   -H "Content-Type: application/json" \
   -d '{"query": "What is gradient descent?"}'
 ```
@@ -255,8 +271,9 @@ curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_
 | `AGENT_ENABLED` | `true` | Enable the curation agent (disable for single-pass RAG) |
 | `AGENT_MAX_ITERATIONS` | `3` | Maximum curation iterations before forcing approval |
 | `AGENT_CURATION_MODEL` | `gpt-5-nano` | Model for curation evaluation (should be fast and cheap) |
+| `AGENT_CURATION_REASONING` | `low` | Reasoning effort for the curation agent (`none`, `low`, `medium`, `high`) |
 | `AGENT_MAX_CONTEXT_CHUNKS` | `18` | Maximum chunks in the agent's context pool |
-| `AGENT_DEBUG_TRACE` | `false` | Include reasoning trace in API responses |
+| `REASONING_TRACE_VISIBLE` | `false` | Expose the agent's reasoning trace in the chat UI as an expandable "ver raciocínio" toggle |
 
 ### Database & Storage
 

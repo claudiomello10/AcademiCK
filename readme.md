@@ -83,9 +83,11 @@ When a user sends a query, the API Gateway orchestrates the following stages:
    - The agent never answers — it only curates
 4. **Answer generation** with curated context
 
-   - The main LLM receives curated chunks and generates a citation-backed response
+   - The main LLM receives curated chunks and generates a citation-backed response, streamed token-by-token
 
 When the curation agent is disabled, the pipeline skips step 3 (single-pass).
+
+All three LLM stages (query enhancement, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat/{session_id}`) streams pipeline progress and answer tokens to the UI as Server-Sent Events; the legacy non-streaming response shape is still available at `/single`.
 
 ## Quick Start
 
@@ -167,6 +169,7 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | `DEFAULT_SUBJECT`           | No           | Academic subject (default: Machine Learning)           |
 | `DEFAULT_MODEL`             | No           | Default LLM model (default: gpt-5-mini)                |
 | `AGENT_ENABLED`             | No           | Enable curation agent (default: true)                  |
+| `REASONING_TRACE_VISIBLE`   | No           | Expose the agent's reasoning trace in the chat UI (default: false) |
 | `EMBEDDING_DEVICE`          | No           | Embedding device:`gpu` or `cpu` (default: gpu)     |
 | `CHUNK_SIZE`                | No           | Chunk size in chars for PDF processing (default: 3000) |
 | `CELERY_WORKER_CONCURRENCY` | No           | Parallel PDF processing workers (default: 2)           |
