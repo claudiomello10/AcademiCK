@@ -137,7 +137,7 @@ class CurationAgent:
             result = await agent.run(user_prompt)
             decision: KeepDecision = result.output
 
-            usage = result.usage()
+            usage = result.usage
             total_tokens += (usage.total_tokens or 0) if usage else 0
 
             reasoning_trace.append(

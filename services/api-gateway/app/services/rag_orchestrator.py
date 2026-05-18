@@ -270,7 +270,7 @@ class RAGOrchestrator:
                 async for delta in run.stream_text(delta=True):
                     parts.append(delta)
                     await emit({"type": "token", "text": delta})
-                usage = run.usage()
+                usage = run.usage
                 tokens_used = usage.total_tokens if usage else None
             response = "".join(parts)
 
@@ -282,7 +282,7 @@ class RAGOrchestrator:
                 )
                 result = await answer_agent.run(query, message_history=history)
                 response = result.output or ""
-                usage = result.usage()
+                usage = result.usage
                 tokens_used = usage.total_tokens if usage else None
                 if response:
                     await emit({"type": "token", "text": response})
