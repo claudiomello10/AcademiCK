@@ -193,7 +193,8 @@ async def chat(
         model_used=result["model_used"],
         processing_time_ms=result["processing_time_ms"],
         agent_iterations=result.get("agent_iterations"),
-        reasoning_trace=result.get("reasoning_trace") if settings.agent_debug_trace else None,
+        agent_searches=result.get("agent_searches"),
+        reasoning_trace=result.get("reasoning_trace") if settings.reasoning_trace_visible else None,
     )
 
 
@@ -249,7 +250,8 @@ async def chat_single(
         model_used=result["model_used"],
         processing_time_ms=result["processing_time_ms"],
         agent_iterations=result.get("agent_iterations"),
-        reasoning_trace=result.get("reasoning_trace") if settings.agent_debug_trace else None,
+        agent_searches=result.get("agent_searches"),
+        reasoning_trace=result.get("reasoning_trace") if settings.reasoning_trace_visible else None,
     )
 
 

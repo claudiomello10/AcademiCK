@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "gpt-5-nano")
     agent_curation_reasoning: str = os.getenv("AGENT_CURATION_REASONING", "low")
     agent_max_context_chunks: int = int(os.getenv("AGENT_MAX_CONTEXT_CHUNKS", "18"))
-    agent_debug_trace: bool = os.getenv("AGENT_DEBUG_TRACE", "false").lower() == "true"
+    reasoning_trace_visible: bool = os.getenv("REASONING_TRACE_VISIBLE", "false").lower() == "true"
 
     # Default subject for new sessions
     default_subject: str = os.getenv("DEFAULT_SUBJECT", "Machine Learning")

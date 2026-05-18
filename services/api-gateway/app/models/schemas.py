@@ -67,8 +67,9 @@ class ChatResponse(BaseModel):
     sources: List[SourceChunk]
     model_used: str
     processing_time_ms: float
-    # Agentic RAG metadata (agent_tokens, agent_searches, agent_time_ms tracked in DB for future admin analytics)
+    # Agentic RAG metadata (agent_tokens and agent_time_ms stay DB-only for admin analytics)
     agent_iterations: Optional[int] = None
+    agent_searches: Optional[int] = None
     reasoning_trace: Optional[List[str]] = None
 
 
