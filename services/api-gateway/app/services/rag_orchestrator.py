@@ -70,7 +70,7 @@ class RAGOrchestrator:
             llm_result = await self.llm_service.generate(
                 messages=messages,
                 model=settings.query_enhancement_model,
-                temperature=0.3  # Lower temperature for more focused queries
+                reasoning_effort=settings.query_enhancement_reasoning
             )
             response = llm_result["text"] or ""
 
@@ -221,7 +221,7 @@ class RAGOrchestrator:
             llm_result = await self.llm_service.generate(
                 messages=messages,
                 model=model,
-                temperature=0.7
+                reasoning_effort=settings.rag_reasoning
             )
             response = llm_result["text"]
             tokens_used = llm_result.get("total_tokens")
@@ -235,7 +235,7 @@ class RAGOrchestrator:
                 llm_result = await self.llm_service.generate(
                     messages=messages,
                     model=model,
-                    temperature=0.7
+                    reasoning_effort=settings.rag_reasoning
                 )
                 response = llm_result["text"]
                 tokens_used = llm_result.get("total_tokens")

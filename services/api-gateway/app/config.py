@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # Model for query enhancement (fast and cheap, runs on every query)
     query_enhancement_model: str = os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-5-nano")
 
+    # Reasoning effort per pipeline stage ("none", "low", "medium", "high")
+    query_enhancement_reasoning: str = os.getenv("QUERY_ENHANCEMENT_REASONING", "none")
+    rag_reasoning: str = os.getenv("RAG_REASONING", "none")
+
     # Maximum completion tokens for LLM responses (includes reasoning + output)
     llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "16384"))
 
@@ -90,7 +94,7 @@ class Settings(BaseSettings):
     agent_enabled: bool = os.getenv("AGENT_ENABLED", "true").lower() == "true"
     agent_max_iterations: int = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
     agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "gpt-5-nano")
-    agent_curation_temperature: float = float(os.getenv("AGENT_CURATION_TEMPERATURE", "0.2"))
+    agent_curation_reasoning: str = os.getenv("AGENT_CURATION_REASONING", "low")
     agent_max_context_chunks: int = int(os.getenv("AGENT_MAX_CONTEXT_CHUNKS", "18"))
     agent_debug_trace: bool = os.getenv("AGENT_DEBUG_TRACE", "false").lower() == "true"
 

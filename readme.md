@@ -21,6 +21,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 - **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with Reciprocal Rank Fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
 - **Multi-Provider LLM** — Choose between OpenAI, Anthropic, or DeepSeek models per query
+- **Agentic Context Curation** — Multi-iteration agent drops noise and fetches missing context before answer generation
 - **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
 - **Admin Dashboard** — Content management, user management, and usage statistics
@@ -30,27 +31,61 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 ## Architecture
 
 ```
-                         +------------------+
-                         |      nginx       |
-                         |    (port 80)     |
-                         +--------+---------+
-                                  |
-            +---------------------+---------------------+
-            |                     |                     |
-   +--------v--------+   +--------v--------+   +--------v--------+
-   |    Frontend     |   |   API Gateway   |   |   PDF Service   |
-   |   (Next.js)     |   |   (FastAPI)     |   |   (FastAPI)     |
-   +-----------------+   +--------+--------+   +-----------------+
-                                  |
-         +------------+-----------+-----------+------------+
-         |            |           |           |            |
-+--------v---+ +------v-----+ +---v------+ +--v-------+ +--v---------+
-|  Intent    | | Embedding  | |  Qdrant  | |  Redis   | | PostgreSQL |
-| Classifier | |  Service   | | Vectors  | |  Cache   | |  Database  |
-+------------+ +------------+ +----------+ +----------+ +------------+
+                            +------------------+
+                            |      nginx       |
+                            |    (port 80)     |
+                            +--------+---------+
+                                     |
+               +---------------------+---------------------+
+               |                     |                     |
+      +--------v--------+   +--------v---------+   +-------v---------+
+      |    Frontend     |   |   API Gateway    |   |   PDF Service   |
+      |   (Next.js)     |   | +--------------+ |   |   (FastAPI)     |
+      +-----------------+   | |     RAG      | |   +-------+---------+
+                            | | Orchestrator | |           |
+                            | +------+-------+ |           |
+                            |        |         |           |
+                            | +------v-------+ |           |
+                            | |   Curation   | |           |
+                            | |    Agent     | |           |
+                            | +--------------+ |           |
+                            +------+-----------+           |
+                                   |                       |
+         +-----------+-------------+------------+----------+--+
+         |           |             |            |             |
++--------v--+ +------v-----+ +-----v----+ +-----v----+ +------v-----+
+|  Intent   | | Embedding  | |  Qdrant  | |  Redis   | | PostgreSQL |
+| Classifier| |  Service   | | Vectors  | |  Cache   | |  Database  |
++-----------+ +------------+ +----------+ +----------+ +------------+
+
+                    LLM APIs: OpenAI / Anthropic / DeepSeek
 ```
 
 > All internal services communicate over an isolated Docker network. Only nginx is exposed to the host.
+
+### RAG Pipeline
+
+When a user sends a query, the API Gateway orchestrates the following stages:
+
+1. **Intent classification + Query enhancement** (parallel)
+
+   - A fine-tuned classifier detects query type (Q&A, summarization, coding, search)
+   - A fast LLM generates up to 3 focused search queries and a resolved query (pronouns/references replaced with actual terms from conversation history)
+2. **Hybrid search** with enhanced queries
+
+   - Each query is embedded and matched against textbook chunks in Qdrant
+   - Dense and sparse scores are fused via Reciprocal Rank Fusion
+   - Results are merged and deduplicated across queries
+3. **Agentic context curation** (when `AGENT_ENABLED=true`)
+
+   - A curation agent evaluates retrieved chunks in an iterative loop (up to `AGENT_MAX_ITERATIONS`)
+   - Each iteration: **APPROVE** (context is sufficient) or **REFINE** (drop noise, fetch more via new searches)
+   - The agent never answers — it only curates
+4. **Answer generation** with curated context
+
+   - The main LLM receives curated chunks and generates a citation-backed response
+
+When the curation agent is disabled, the pipeline skips step 3 (single-pass).
 
 ## Quick Start
 
@@ -103,9 +138,9 @@ docker compose ps
 
 ### 3. Access the Application
 
-| URL                    | Description   |
-| ---------------------- | ------------- |
-| http://localhost       | Web interface |
+| URL                    | Description     |
+| ---------------------- | --------------- |
+| http://localhost       | Web interface   |
 | http://localhost/admin | Admin dashboard |
 
 ### 4. Login
@@ -119,23 +154,24 @@ Use the credentials you set in `.env`:
 
 Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](docs/USAGE.md) for the full list):
 
-| Variable              | Required     | Description                                        |
-| --------------------- | ------------ | -------------------------------------------------- |
-| `POSTGRES_PASSWORD` | Yes          | PostgreSQL password                                |
-| `REDIS_PASSWORD`    | Yes          | Redis authentication password                      |
-| `SESSION_SECRET`    | Yes          | Secret key for session encryption                  |
-| `ADMIN_PASSWORD`    | Yes          | Admin user password                                |
-| `GUEST_PASSWORD`    | Yes          | Guest user password                                |
-| `OPENAI_API_KEY`    | At least one | OpenAI API key                                     |
-| `ANTHROPIC_API_KEY` | At least one | Anthropic API key                                  |
-| `DEEPSEEK_API_KEY`  | At least one | DeepSeek API key                                   |
-| `DEFAULT_SUBJECT`   | No           | Academic subject (default: Machine Learning)       |
-| `DEFAULT_MODEL`     | No           | Default LLM model (default: gpt-5-mini)            |
-| `EMBEDDING_DEVICE`  | No           | Embedding device: `gpu` or `cpu` (default: gpu)    |
-| `CHUNK_SIZE`        | No           | Chunk size in chars for PDF processing (default: 3000) |
-| `CELERY_WORKER_CONCURRENCY` | No   | Parallel PDF processing workers (default: 2)       |
-| `OMP_NUM_THREADS`   | No           | OpenMP threads for Docling/PyTorch (default: 4)    |
-| `DOCS_ENABLED`      | No           | Enable Swagger UI (default: true)                  |
+| Variable                      | Required     | Description                                            |
+| ----------------------------- | ------------ | ------------------------------------------------------ |
+| `POSTGRES_PASSWORD`         | Yes          | PostgreSQL password                                    |
+| `REDIS_PASSWORD`            | Yes          | Redis authentication password                          |
+| `SESSION_SECRET`            | Yes          | Secret key for session encryption                      |
+| `ADMIN_PASSWORD`            | Yes          | Admin user password                                    |
+| `GUEST_PASSWORD`            | Yes          | Guest user password                                    |
+| `OPENAI_API_KEY`            | At least one | OpenAI API key                                         |
+| `ANTHROPIC_API_KEY`         | At least one | Anthropic API key                                      |
+| `DEEPSEEK_API_KEY`          | At least one | DeepSeek API key                                       |
+| `DEFAULT_SUBJECT`           | No           | Academic subject (default: Machine Learning)           |
+| `DEFAULT_MODEL`             | No           | Default LLM model (default: gpt-5-mini)                |
+| `AGENT_ENABLED`             | No           | Enable curation agent (default: true)                  |
+| `EMBEDDING_DEVICE`          | No           | Embedding device:`gpu` or `cpu` (default: gpu)     |
+| `CHUNK_SIZE`                | No           | Chunk size in chars for PDF processing (default: 3000) |
+| `CELERY_WORKER_CONCURRENCY` | No           | Parallel PDF processing workers (default: 2)           |
+| `OMP_NUM_THREADS`           | No           | OpenMP threads for Docling/PyTorch (default: 4)        |
+| `DOCS_ENABLED`              | No           | Enable Swagger UI (default: true)                      |
 
 ## Services
 

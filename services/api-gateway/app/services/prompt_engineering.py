@@ -169,16 +169,23 @@ def get_enhanced_query_prompt(query: str, subject: str, available_books: List[st
 
 Guidelines for search queries:
 
-- Before generating the search queries, write a <resolved_query> that restates the student's question with all references resolved (e.g., "that", "it", "the previous topic") using the conversation history. If the query is already self-contained, repeat it as-is.
-- Use domain-specific technical vocabulary and terminology
-- Include key theorems, laws, or principles by their formal names
-- Focus on foundational concepts as they would appear in academic texts
-- Target textbook sections and chapter topics using standard academic organization
-- Break down complex queries into simpler, core components
-- Use keywords that maximize relevant context retrieval
-- Try to find exactly what the user is looking for
-- The search queries should all be focused on the same topic, but they should be different.
+Your queries will be embedded and matched via semantic similarity against textbook chunks stored in a vector database. To get good matches, follow these rules strictly:
+- Before generating the search queries, write a <resolved_query> that restates the student's question with all references resolved (e.g., "that", "it", "the previous topic") using the conversation history. The resolved query must be a minimal rewrite — only replace pronouns and references with the actual terms they refer to. Do NOT add information, elaborate, explain concepts, translate, or expand the query beyond what the student wrote. If the query is already self-contained, repeat it exactly as-is. When a <Book>name</Book> tag appears, simply replace it with "the book name" (or "o livro name" if the student is writing in Portuguese). Examples:
+  - "Explain <Book>biscect-kmeans</Book>" → "Explain the book biscect-kmeans"
+  - "Explique <Book>biscect-kmeans</Book>" → "Explique o livro biscect-kmeans"
+  - "What was that concept about?" (previous topic was gradient descent) → "What was gradient descent about?"
+- Write queries as declarative statements that resemble how the content would actually be written in a textbook paragraph. DO NOT write commands, instructions, or questions — write statements. The database contains textbook text, so the closer your query looks like actual textbook prose, the better the match.
+  - BAD: "Describe the architecture of the multi-task learning model" (this is a command, not textbook text)
+  - BAD: "Explain how attention mechanisms weight features for each task" (this is an instruction)
+  - GOOD: "The multi-task learning architecture uses a shared encoder with task-specific attention modules" (this resembles textbook prose)
+  - GOOD: "Attention mechanisms selectively weight shared features for each task during end-to-end training" (declarative statement)
+- Use the specific technical terms, definitions, and formal names that a textbook author would use when explaining the concept.
+- DO NOT write structural or navigational queries like "table of contents", "list of chapters", "overview of topic X", "introduction to Y", or "summary of Z" — these will not match any content because the database contains textbook paragraphs, not metadata.
+- DO NOT write vague or overly broad queries. Be precise about the specific concept or information the student is asking about.
+- Break down complex queries into simpler, core components.
+- The search queries should all be focused on the same topic, but each should target a different aspect to maximize coverage.
 - It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books.
+- The <Book>name</Book> tag in user messages is ONLY a book/article name used to filter which source to search. The text inside the tag is NOT a topic or concept — it is just the title of a book or article. Do not include it in the query text or the resolved query, and do not try to explain it as a concept. For example, "Explain <Book>biscect-kmeans</Book>" means "Explain the contents of the book/article titled 'biscect-kmeans'".
 - If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book".
 - The book name should be written exactly as it is written in the tag <Book>name_of_the_book</Book>, do not omit any part of the name, and do not add any part to the name.
 - If no specific book is mentioned or if the search should be performed across all available resources, use book="all".
@@ -300,6 +307,17 @@ Rules:
 - Keep only chunks that are directly relevant. Less noise = better final answer.
 - If no chunks are relevant, keep an empty list — the system will tell the student the topic was not found in the books.
 - Do NOT generate an answer. Only curate the context.
+
+Query generation rules for REFINE:
+Your new queries will be embedded and matched via semantic similarity against textbook chunks stored in a vector database. To get good matches, follow these rules strictly:
+- Write queries as declarative statements that resemble how the content would actually be written in a textbook paragraph. DO NOT write commands, instructions, or questions — write statements. The database contains textbook text, so the closer your query looks like actual textbook prose, the better the match.
+  - BAD: "Describe the gradient descent convergence conditions" (command)
+  - GOOD: "Gradient descent converges when the learning rate is sufficiently small and the loss function is convex" (declarative)
+- Use the specific technical terms, definitions, and formal names that a textbook author would use when explaining the concept.
+- DO NOT write structural or navigational queries like "table of contents", "list of chapters", "overview of topic X", "introduction to Y", or "summary of Z" — these will not match any content because the database contains textbook paragraphs, not metadata.
+- DO NOT write vague or overly broad queries. Be precise about what information is missing.
+- Each query should target a different aspect of the missing information to maximize coverage.
+- If you know the concept is likely in a specific book, target that book instead of searching all.
 
 Available books:
 {books_list}

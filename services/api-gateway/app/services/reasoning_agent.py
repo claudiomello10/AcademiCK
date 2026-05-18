@@ -246,7 +246,7 @@ class CurationAgent:
             eval_result = await self.llm_service.generate(
                 messages=[{"role": "user", "content": eval_prompt}],
                 model=settings.agent_curation_model,
-                temperature=settings.agent_curation_temperature
+                reasoning_effort=settings.agent_curation_reasoning
             )
             total_agent_tokens += eval_result.get("total_tokens", 0)
 
@@ -256,11 +256,18 @@ class CurationAgent:
                 f"[Iter {iteration}] {action.type}: {action.reasoning}"
             )
 
-            logger.info(
-                f"[CurationAgent] Iter {iteration}/{max_iterations}: "
-                f"{action.type} — keeping {len(action.keep_indices)} chunks, "
-                f"{len(action.new_queries)} new queries"
-            )
+            if action.type == "REFINE":
+                logger.info(
+                    f"[CurationAgent] Iter {iteration}/{max_iterations}: REFINE\n"
+                    f"Reasoning: {action.reasoning}\n"
+                    f"Keeping chunks: {action.keep_indices}\n"
+                    f"New queries: {action.new_queries}"
+                )
+            else:
+                logger.info(
+                    f"[CurationAgent] Iter {iteration}/{max_iterations}: "
+                    f"{action.type} — keeping {len(action.keep_indices)} chunks"
+                )
 
             # Apply keep_chunks filter (1-indexed)
             context_pool = [

@@ -49,8 +49,8 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: int = settings.llm_max_tokens
+        max_tokens: int = settings.llm_max_tokens,
+        reasoning_effort: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate a response using the specified model.
@@ -58,8 +58,11 @@ class LLMService:
         Args:
             messages: List of message dicts with 'role' and 'content'
             model: Model name (determines provider)
-            temperature: Sampling temperature
             max_tokens: Maximum tokens in response
+            reasoning_effort: Reasoning effort level ("none", "low", "medium", "high").
+                              OpenAI: passed as reasoning_effort parameter.
+                              Anthropic: mapped to thinking budget_tokens.
+                              DeepSeek: applied to reasoner models via reasoning_effort.
 
         Returns:
             Dict with 'text', 'total_tokens', 'prompt_tokens', 'completion_tokens'
@@ -70,31 +73,34 @@ class LLMService:
         logger.info(f"Generating with model={model}, provider={provider}")
 
         if provider == "openai":
-            return await self._generate_openai(messages, model, temperature, max_tokens)
+            return await self._generate_openai(messages, model, max_tokens, reasoning_effort)
         elif provider == "anthropic":
-            return await self._generate_anthropic(messages, model, temperature, max_tokens)
+            return await self._generate_anthropic(messages, model, max_tokens, reasoning_effort)
         elif provider == "deepseek":
-            return await self._generate_deepseek(messages, model, temperature, max_tokens)
+            return await self._generate_deepseek(messages, model, max_tokens, reasoning_effort)
         else:
-            return await self._generate_openai(messages, model, temperature, max_tokens)
+            return await self._generate_openai(messages, model, max_tokens, reasoning_effort)
 
     async def _generate_openai(
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int
+        max_tokens: int,
+        reasoning_effort: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate using OpenAI API."""
         if not self.openai_client:
             raise ValueError("OpenAI API key not configured")
 
         try:
-            response = await self.openai_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_completion_tokens=max_tokens,
-            )
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_completion_tokens": max_tokens,
+            }
+            if reasoning_effort is not None and reasoning_effort != "none":
+                kwargs["reasoning_effort"] = reasoning_effort
+            response = await self.openai_client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
             if not content:
                 logger.warning(
@@ -118,8 +124,8 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int
+        max_tokens: int,
+        reasoning_effort: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate using Anthropic API."""
         if not self.anthropic_client:
@@ -136,14 +142,25 @@ class LLMService:
                 else:
                     user_messages.append({"role": msg["role"], "content": msg["content"]})
 
-            response = await self.anthropic_client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                system=system_content,
-                messages=user_messages,
-                temperature=temperature
-            )
-            content = response.content[0].text if response.content else None
+            kwargs = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "system": system_content,
+                "messages": user_messages,
+            }
+
+            # Map reasoning_effort to Anthropic's thinking/budget_tokens
+            thinking_budget = self._map_anthropic_thinking_budget(reasoning_effort, max_tokens)
+            if thinking_budget is not None:
+                kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+
+            response = await self.anthropic_client.messages.create(**kwargs)
+            # With thinking enabled, filter out thinking blocks
+            content = None
+            for block in (response.content or []):
+                if block.type == "text":
+                    content = block.text
+                    break
             if not content:
                 logger.warning(
                     f"Anthropic returned empty content: model={model}, "
@@ -162,12 +179,23 @@ class LLMService:
             logger.error(f"Anthropic generation failed: {e}")
             raise
 
+    def _map_anthropic_thinking_budget(self, reasoning_effort: Optional[str], max_tokens: int) -> Optional[int]:
+        """Map reasoning_effort string to Anthropic thinking budget_tokens. Returns None to disable thinking."""
+        if reasoning_effort is None or reasoning_effort == "none":
+            return None
+        budget_map = {
+            "low": max(1024, max_tokens // 4),
+            "medium": max(2048, max_tokens // 2),
+            "high": max(4096, max_tokens),
+        }
+        return budget_map.get(reasoning_effort)
+
     async def _generate_deepseek(
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int
+        max_tokens: int,
+        reasoning_effort: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate using DeepSeek API (OpenAI-compatible)."""
         if not settings.deepseek_api_key:
@@ -181,12 +209,16 @@ class LLMService:
                 base_url="https://api.deepseek.com/v1"
             )
 
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+            }
+            # DeepSeek reasoner models use OpenAI-compatible reasoning_effort
+            if reasoning_effort is not None and reasoning_effort != "none" and "reasoner" in model.lower():
+                kwargs["reasoning_effort"] = reasoning_effort
+
+            response = await client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
             if not content:
                 logger.warning(

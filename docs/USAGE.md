@@ -9,7 +9,6 @@ Detailed documentation for using, configuring, and troubleshooting AcademiCK.
 - [Processing New PDFs](#processing-new-pdfs)
 - [Admin Dashboard](#admin-dashboard)
 - [Backup and Restore](#backup-and-restore)
-- [Data Migration](#data-migration)
 - [Environment Variables](#environment-variables)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
@@ -173,54 +172,35 @@ Access at http://localhost/admin with admin credentials.
 
 ## Backup and Restore
 
-### Create Qdrant Snapshot
+Snapshots are managed through the admin dashboard or the API. Each snapshot includes the Qdrant vector data and a metadata JSON file with book/chapter information.
+
+### Via Admin Dashboard
+
+1. Go to "Content Management" tab
+2. Use the snapshot management buttons to create, restore, download, upload, or delete snapshots
+
+### Via API
 
 ```bash
-python scripts/export_qdrant_snapshot.py \
-  --action create \
-  --output-dir ./data/qdrant_snapshots/
-```
+# Create snapshot
+curl -X POST "http://localhost/api/v1/admin/snapshots/create?session_id={admin_session}"
 
-### Restore from Snapshot
+# List snapshots
+curl "http://localhost/api/v1/admin/snapshots?session_id={admin_session}"
 
-```bash
-python scripts/export_qdrant_snapshot.py \
-  --action restore \
-  --snapshot-path ./data/qdrant_snapshots/your-snapshot.snapshot
-```
+# Restore snapshot
+curl -X POST "http://localhost/api/v1/admin/snapshots/{snapshot_name}/restore?session_id={admin_session}"
 
----
+# Download snapshot file
+curl -O "http://localhost/api/v1/admin/snapshots/{snapshot_name}/download?session_id={admin_session}"
 
-## Data Migration
+# Upload external snapshot with metadata
+curl -X POST "http://localhost/api/v1/admin/snapshots/upload?session_id={admin_session}" \
+  -F "snapshot_file=@your-snapshot.snapshot" \
+  -F "metadata_file=@your-snapshot.metadata.json"
 
-If you have existing embeddings in SQLite format:
-
-```bash
-# Install migration dependencies
-pip install asyncpg httpx qdrant-client tqdm
-
-# Run migration (without sparse embeddings - faster)
-python scripts/migrate_embeddings.py \
-    --sqlite-path data/embeddings/embeddings.db \
-    --no-regenerate-sparse \
-    --validate \
-    --create-snapshot
-```
-
-To generate sparse embeddings for hybrid search (requires embedding service):
-
-```bash
-# First start embedding service
-docker compose up -d embedding-service
-
-# Wait for model to load (~2-5 minutes)
-docker logs -f academick-embedding
-
-# Run migration with sparse embedding generation
-python scripts/migrate_embeddings.py \
-    --sqlite-path data/embeddings/embeddings.db \
-    --validate \
-    --create-snapshot
+# Delete snapshot
+curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_id={admin_session}"
 ```
 
 ---
@@ -264,6 +244,19 @@ python scripts/migrate_embeddings.py \
 | `SEARCH_WEIGHT_SUMMARIZATION_DENSE` | `0.7` | Dense weight for summarization queries |
 | `SEARCH_WEIGHT_CODING_DENSE` | `0.4` | Dense weight for coding queries |
 | `SEARCH_WEIGHT_SEARCHING_DENSE` | `0.5` | Dense weight for search queries |
+| `QUERY_ENHANCEMENT_REASONING` | `none` | Reasoning effort for query enhancement (`none`, `low`, `medium`, `high`) |
+| `RAG_REASONING` | `none` | Reasoning effort for main answer generation |
+| `AGENT_CURATION_REASONING` | `low` | Reasoning effort for curation agent |
+
+### Agentic RAG
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_ENABLED` | `true` | Enable the curation agent (disable for single-pass RAG) |
+| `AGENT_MAX_ITERATIONS` | `3` | Maximum curation iterations before forcing approval |
+| `AGENT_CURATION_MODEL` | `gpt-5-nano` | Model for curation evaluation (should be fast and cheap) |
+| `AGENT_MAX_CONTEXT_CHUNKS` | `18` | Maximum chunks in the agent's context pool |
+| `AGENT_DEBUG_TRACE` | `false` | Include reasoning trace in API responses |
 
 ### Database & Storage
 
