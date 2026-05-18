@@ -1,9 +1,13 @@
 """Chat endpoints for RAG conversations."""
 
-from fastapi import APIRouter, Request, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
+import asyncio
+import json
 import logging
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.models.schemas import (
     ChatRequest, ChatResponse, SourceChunk,
@@ -107,85 +111,12 @@ async def get_session_or_error(request: Request, session_id: str):
     return session
 
 
-@router.post("/chat/{session_id}", response_model=ChatResponse)
-async def chat(
-    request: Request,
-    session_id: str,
-    chat_request: ChatRequest
-):
-    """
-    Send a message and get a RAG-powered response.
+def _sse(event_type: str, data: Dict[str, Any]) -> str:
+    """Format a single Server-Sent Event frame."""
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    Uses conversation history for context.
-    """
-    session = await get_session_or_error(request, session_id)
 
-    # Create RAG orchestrator
-    orchestrator = RAGOrchestrator(
-        intent_client=request.app.state.intent_client,
-        embedding_client=request.app.state.embedding_client,
-        qdrant=request.app.state.qdrant,
-        redis=request.app.state.redis
-    )
-
-    # Get conversation history
-    messages = await request.app.state.session_service.get_messages(session_id)
-
-    # Process query
-    result = await orchestrator.process_query(
-        query=chat_request.query,
-        subject=session.get("subject", settings.default_subject),
-        conversation_history=messages,
-        model=chat_request.model,
-        book_filter=chat_request.book_filter
-    )
-
-    # Save messages to session with PostgreSQL persistence
-    try:
-        # Save user message
-        await request.app.state.session_service.add_message(
-            session_id=session_id,
-            role="user",
-            content=chat_request.query
-        )
-
-        # Save assistant message with metadata and retrieved chunks for analytics
-        await request.app.state.session_service.add_message(
-            session_id=session_id,
-            role="assistant",
-            content=result["response"],
-            intent=result["intent"],
-            model_used=result["model_used"],
-            tokens_used=result.get("tokens_used"),
-            response_time_ms=int(result["processing_time_ms"]),
-            retrieved_chunks=result.get("search_results", [])
-        )
-    except ConversationFullError as e:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "conversation_full",
-                "message": str(e),
-                "action": "Please start a new conversation using POST /conversations/{session_id}/new"
-            }
-        )
-
-    # Track usage stats (use 'query' action_type to match admin stats queries)
-    await track_usage(
-        db_pool=request.app.state.db_pool,
-        user_id=session.get("user_id"),
-        session_id=session_id,
-        action_type="query",
-        response_time_ms=result["processing_time_ms"],
-        model_used=result["model_used"],
-        intent=result["intent"],
-        tokens_consumed=result.get("tokens_used"),
-        agent_iterations=result.get("agent_iterations", 0),
-        agent_tokens=result.get("agent_tokens", 0),
-        agent_searches=result.get("agent_searches", 0),
-        agent_time_ms=int(result.get("agent_time_ms", 0)),
-    )
-
+def _build_chat_response(result: Dict[str, Any]) -> ChatResponse:
     return ChatResponse(
         response=result["response"],
         intent=result["intent"],
@@ -194,8 +125,123 @@ async def chat(
         processing_time_ms=result["processing_time_ms"],
         agent_iterations=result.get("agent_iterations"),
         agent_searches=result.get("agent_searches"),
-        reasoning_trace=result.get("reasoning_trace") if settings.reasoning_trace_visible else None,
+        reasoning_trace=(
+            result.get("reasoning_trace")
+            if settings.reasoning_trace_visible
+            else None
+        ),
     )
+
+
+@router.post("/chat/{session_id}")
+async def chat(
+    request: Request,
+    session_id: str,
+    chat_request: ChatRequest,
+):
+    """Send a message and stream a RAG-powered response as SSE.
+
+    Event types emitted in order:
+      - status: pipeline stage transitions (intent, enhancing, searching,
+                curating, generating).
+      - token:  incremental deltas of the final answer.
+      - done:   full ChatResponse payload after persistence succeeds.
+      - error:  any failure; no messages are persisted in this case.
+    """
+    session = await get_session_or_error(request, session_id)
+
+    orchestrator = RAGOrchestrator(
+        intent_client=request.app.state.intent_client,
+        embedding_client=request.app.state.embedding_client,
+        qdrant=request.app.state.qdrant,
+        redis=request.app.state.redis,
+    )
+    messages = await request.app.state.session_service.get_messages(session_id)
+
+    # Sentinel that terminates the event-drain loop.
+    END = object()
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def progress(event: Dict[str, Any]) -> None:
+            await queue.put(event)
+
+        async def runner() -> None:
+            try:
+                result = await orchestrator.process_query(
+                    query=chat_request.query,
+                    subject=session.get("subject", settings.default_subject),
+                    conversation_history=messages,
+                    model=chat_request.model,
+                    book_filter=chat_request.book_filter,
+                    progress=progress,
+                )
+
+                # Persist after the pipeline succeeds. On any error here,
+                # we emit an error event and skip the done event so the
+                # client knows nothing was saved.
+                try:
+                    await request.app.state.session_service.add_message(
+                        session_id=session_id,
+                        role="user",
+                        content=chat_request.query,
+                    )
+                    await request.app.state.session_service.add_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=result["response"],
+                        intent=result["intent"],
+                        model_used=result["model_used"],
+                        tokens_used=result.get("tokens_used"),
+                        response_time_ms=int(result["processing_time_ms"]),
+                        retrieved_chunks=result.get("search_results", []),
+                    )
+                except ConversationFullError as e:
+                    await queue.put({
+                        "type": "error",
+                        "code": "conversation_full",
+                        "message": str(e),
+                    })
+                    return
+
+                await track_usage(
+                    db_pool=request.app.state.db_pool,
+                    user_id=session.get("user_id"),
+                    session_id=session_id,
+                    action_type="query",
+                    response_time_ms=result["processing_time_ms"],
+                    model_used=result["model_used"],
+                    intent=result["intent"],
+                    tokens_consumed=result.get("tokens_used"),
+                    agent_iterations=result.get("agent_iterations", 0),
+                    agent_tokens=result.get("agent_tokens", 0),
+                    agent_searches=result.get("agent_searches", 0),
+                    agent_time_ms=int(result.get("agent_time_ms", 0)),
+                )
+
+                payload = _build_chat_response(result).model_dump(mode="json")
+                await queue.put({"type": "done", "payload": payload})
+
+            except Exception as e:
+                logger.exception("chat stream failed")
+                await queue.put({"type": "error", "message": str(e)})
+            finally:
+                await queue.put(END)
+
+        task = asyncio.create_task(runner())
+        try:
+            while True:
+                event = await queue.get()
+                if event is END:
+                    break
+                event_type = event.pop("type")
+                yield _sse(event_type, event)
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/chat/{session_id}/single", response_model=ChatResponse)

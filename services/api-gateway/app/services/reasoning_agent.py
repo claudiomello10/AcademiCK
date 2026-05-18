@@ -4,7 +4,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -75,6 +75,7 @@ class CurationAgent:
         subject: str,
         initial_chunks: List[Dict],
         top_k: int,
+        progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> AgentResult:
         try:
             return await self._run_loop(
@@ -83,6 +84,7 @@ class CurationAgent:
                 subject=subject,
                 initial_chunks=initial_chunks,
                 top_k=top_k,
+                progress=progress,
             )
         except Exception as e:
             logger.error(f"CurationAgent failed, falling back to single-pass: {e}")
@@ -102,6 +104,7 @@ class CurationAgent:
         subject: str,
         initial_chunks: List[Dict],
         top_k: int,
+        progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> AgentResult:
         agent_start = time.time()
         context_pool = list(initial_chunks)
@@ -141,6 +144,26 @@ class CurationAgent:
                 f"[Iter {iteration}] {decision.action}: {decision.reasoning}"
             )
             self._log_decision(iteration, max_iterations, decision)
+
+            if progress is not None:
+                if decision.action == "REFINE":
+                    label = f"Refinando contexto ({iteration}/{max_iterations})..."
+                else:
+                    label = f"Curando contexto ({iteration}/{max_iterations})..."
+                await progress({
+                    "type": "status",
+                    "stage": "curating",
+                    "label": label,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                    "action": decision.action,
+                    "kept": len(decision.keep_indices),
+                    "new_searches": (
+                        len(decision.new_queries)
+                        if decision.action == "REFINE"
+                        else 0
+                    ),
+                })
 
             # Apply keep filter (1-indexed). Out-of-range indices silently ignored.
             context_pool = [

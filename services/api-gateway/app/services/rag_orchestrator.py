@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from typing import Dict, List, Optional, Any
+from typing import Awaitable, Callable, Dict, List, Optional, Any
 import logging
 
 from pydantic import BaseModel, Field
@@ -72,6 +72,26 @@ def _to_pydantic_ai_history(
         else:
             history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
     return history
+
+
+# Progress callback type: producers in the pipeline emit small dict events.
+# The SSE endpoint provides a queue-feeding callback; non-streaming callers
+# pass None and get a no-op.
+ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
+
+
+async def _noop_progress(_: Dict[str, Any]) -> None:
+    pass
+
+
+# Portuguese labels emitted with each stage. The UI just renders these
+# verbatim — backend can tweak copy without a frontend ship.
+STAGE_LABELS = {
+    "intent": "Entendendo pergunta...",
+    "enhancing": "Gerando consultas de busca...",
+    "searching": "Buscando nos livros...",
+    "generating": "Gerando resposta...",
+}
 
 
 class RAGOrchestrator:
@@ -152,75 +172,85 @@ class RAGOrchestrator:
         subject: str = settings.default_subject,
         conversation_history: Optional[List[Dict]] = None,
         model: Optional[str] = None,
-        book_filter: Optional[str] = None
+        book_filter: Optional[str] = None,
+        progress: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
-        """
-        Process a user query through the RAG pipeline.
+        """Process a user query through the RAG pipeline.
 
-        Args:
-            query: User's question
-            subject: Study subject
-            conversation_history: Previous messages for context
-            model: LLM model to use
-            book_filter: Optional book to filter search
-
-        Returns:
-            Dict containing response, intent, sources, and metadata
+        If `progress` is provided, the orchestrator awaits it at each
+        pipeline boundary with small dict events of the form
+        `{"type": "status"|"token", ...}`. Non-streaming callers pass None
+        and the callback is a no-op — behavior is otherwise identical.
         """
+        emit = progress or _noop_progress
         start_time = time.time()
 
-        # Step 1: Classify intent
-        intent_task = asyncio.create_task(
-            self.intent_client.classify(query)
-        )
+        # Step 1+2: intent and query enhancement run concurrently.
+        await emit({"type": "status", "stage": "intent", "label": STAGE_LABELS["intent"]})
+        intent_task = asyncio.create_task(self.intent_client.classify(query))
 
-        # Step 2: Generate enhanced queries (concurrent with intent)
+        await emit({"type": "status", "stage": "enhancing", "label": STAGE_LABELS["enhancing"]})
         enhanced_queries_task = asyncio.create_task(
             self._generate_enhanced_queries(query, subject, conversation_history)
         )
 
-        # Wait for intent classification
         intent_result = await intent_task
         intent = intent_result.get("intent", "question_answering")
+        top_k = (
+            settings.top_k_searching
+            if intent == "searching_for_information"
+            else settings.top_k_default
+        )
 
-        # Adjust top_k based on intent
-        top_k = settings.top_k_searching if intent == "searching_for_information" else settings.top_k_default
-
-        # Wait for enhanced queries
         enhancement_result = await enhanced_queries_task
         enhanced_queries = enhancement_result["retrievals"]
         resolved_query = enhancement_result["resolved_query"]
 
-        # Step 3: Search with enhanced queries
+        # Step 3: initial search.
+        await emit({
+            "type": "status",
+            "stage": "searching",
+            "label": STAGE_LABELS["searching"],
+            "queries": len(enhanced_queries),
+        })
         search_results = await self.search_service.search_with_enhanced_queries(
             queries=enhanced_queries,
             intent=intent,
-            top_k=top_k
+            top_k=top_k,
         )
 
-        # Step 4: Agentic context curation (if enabled)
+        # Step 4: agentic context curation (if enabled). The agent forwards
+        # its own per-iteration status events through the same callback.
         agent_result = None
         if settings.agent_enabled and search_results:
             agent = CurationAgent(
                 search_service=self.search_service,
-                qdrant=self.qdrant
+                qdrant=self.qdrant,
             )
             agent_result = await agent.run(
                 query=resolved_query,
                 intent=intent,
                 subject=subject,
                 initial_chunks=search_results,
-                top_k=top_k
+                top_k=top_k,
+                progress=emit,
             )
             curated_chunks = agent_result.final_chunks
         else:
             curated_chunks = search_results
 
-        # Step 5: Generate final answer via Pydantic AI
+        # Step 5: stream the final answer. Tokens are emitted live so the
+        # UI can render the response as it's generated.
+        await emit({
+            "type": "status",
+            "stage": "generating",
+            "label": STAGE_LABELS["generating"],
+        })
+
         system_prompt = get_rag_system_prompt(
             intent=intent,
             subject=subject,
-            context_chunks=curated_chunks
+            context_chunks=curated_chunks,
         )
         model_name = model or settings.default_model
         answer_agent = Agent(
@@ -233,21 +263,29 @@ class RAGOrchestrator:
         response: str = ""
         tokens_used: Optional[int] = None
         try:
-            result = await answer_agent.run(query, message_history=history)
-            response = result.output or ""
-            usage = result.usage()
-            tokens_used = usage.total_tokens if usage else None
+            parts: List[str] = []
+            async with answer_agent.run_stream(
+                query, message_history=history
+            ) as run:
+                async for delta in run.stream_text(delta=True):
+                    parts.append(delta)
+                    await emit({"type": "token", "text": delta})
+                usage = run.usage()
+                tokens_used = usage.total_tokens if usage else None
+            response = "".join(parts)
 
-            # Retry once if the model returned nothing
+            # If the stream produced nothing, retry once non-streaming.
             if not response:
                 logger.warning(
-                    f"Empty LLM response on first attempt, retrying: "
+                    f"Empty streamed response, retrying non-streaming: "
                     f"model={model_name}, intent={intent}"
                 )
                 result = await answer_agent.run(query, message_history=history)
                 response = result.output or ""
                 usage = result.usage()
                 tokens_used = usage.total_tokens if usage else None
+                if response:
+                    await emit({"type": "token", "text": response})
 
             if not response:
                 logger.error(
@@ -255,9 +293,11 @@ class RAGOrchestrator:
                     f"model={model_name}, intent={intent}"
                 )
                 response = "I apologize, but I was unable to generate a response. Please try again."
+                await emit({"type": "token", "text": response})
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             response = "I apologize, but I encountered an error generating a response. Please try again."
+            await emit({"type": "token", "text": response})
 
         processing_time = (time.time() - start_time) * 1000
 
