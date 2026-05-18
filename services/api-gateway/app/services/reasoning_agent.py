@@ -1,32 +1,57 @@
 """Curation Agent for Agentic RAG — evaluates and curates retrieved context."""
 
-import re
-import time
 import hashlib
-from dataclasses import dataclass, field
-from difflib import SequenceMatcher
-from typing import Dict, List, Optional, Any
 import logging
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
 
 from app.config import settings
-from app.services.prompt_engineering import get_curation_evaluation_prompt
+from app.services.agent_models import build_model
+from app.services.prompt_engineering import (
+    get_curation_system_prompt,
+    get_curation_user_prompt,
+)
 from app.utils.matching import match_book_name
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class AgentAction:
-    """Parsed result of the curation agent's XML response."""
-    type: str  # "APPROVE" or "REFINE"
-    reasoning: str
-    keep_indices: List[int]  # 1-indexed chunk indices to keep
-    new_queries: List[Dict[str, Optional[str]]] = field(default_factory=list)
+class NewQuery(BaseModel):
+    """A follow-up search query the agent wants to issue."""
+
+    query: str = Field(description="Declarative textbook-style search query.")
+    book: Optional[str] = Field(
+        default=None,
+        description="Exact book name to target, or None to search all books.",
+    )
+
+
+class KeepDecision(BaseModel):
+    """The curation agent's per-iteration decision."""
+
+    action: Literal["APPROVE", "REFINE"]
+    reasoning: str = Field(description="Brief justification for the decision.")
+    keep_indices: List[int] = Field(
+        default_factory=list,
+        description="1-indexed chunk indices to keep. Unlisted chunks are dropped.",
+    )
+    new_queries: List[NewQuery] = Field(
+        default_factory=list,
+        description=(
+            "Follow-up queries to issue when action is REFINE. "
+            "Must be non-empty for REFINE; ignored for APPROVE."
+        ),
+    )
 
 
 @dataclass
 class AgentResult:
     """Result returned to the orchestrator."""
+
     final_chunks: List[Dict]
     iterations_used: int
     reasoning_trace: List[str]
@@ -35,145 +60,12 @@ class AgentResult:
     agent_time_ms: float
 
 
-def _fail_safe_approve(num_chunks: int, reason: str) -> AgentAction:
-    """Return an APPROVE action that keeps all chunks (fail-safe)."""
-    return AgentAction(
-        type="APPROVE",
-        reasoning=reason,
-        keep_indices=list(range(1, num_chunks + 1))
-    )
-
-
-def _resolve_action_type(raw_type: str) -> Optional[str]:
-    """
-    Resolve action type: exact match first, then fuzzy match.
-    Returns "APPROVE" or "REFINE", or None if unrecognizable.
-    """
-    upper = raw_type.strip().upper()
-    valid_types = ["APPROVE", "REFINE"]
-
-    # Exact match
-    if upper in valid_types:
-        return upper
-
-    # Fuzzy match
-    best_type = None
-    best_ratio = 0.0
-    for vt in valid_types:
-        ratio = SequenceMatcher(None, upper, vt).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_type = vt
-
-    if best_ratio >= 0.5:
-        logger.info(f"[CurationAgent] Fuzzy matched action '{raw_type}' -> '{best_type}' (similarity: {best_ratio:.2f})")
-        return best_type
-
-    return None
-
-
-def _extract_action_type(response_text: str) -> Optional[str]:
-    """
-    Extract and resolve action type from response text.
-
-    1. Try exact regex for <action type="APPROVE|REFINE">
-    2. Try flexible regex for <action type="anything"> + fuzzy match
-    3. Scan raw text for APPROVE/REFINE keywords
-    Returns resolved action type or None.
-    """
-    # 1. Exact match
-    exact_match = re.search(
-        r'<action\s+type="(APPROVE|REFINE)">', response_text, re.IGNORECASE
-    )
-    if exact_match:
-        return exact_match.group(1).upper()
-
-    # 2. Flexible regex + fuzzy match on the attribute value
-    flexible_match = re.search(
-        r'<action\s+type="([^"]+)">', response_text, re.IGNORECASE
-    )
-    if flexible_match:
-        resolved = _resolve_action_type(flexible_match.group(1))
-        if resolved:
-            return resolved
-
-    # 3. Scan raw text for keywords as last resort before fail-safe
-    # Strip reasoning content to avoid false positives from words like "disapprove" or "refined"
-    stripped = re.sub(r'<reasoning>.*?</reasoning>', '', response_text, flags=re.DOTALL)
-    text_upper = stripped.upper()
-    has_approve = "APPROVE" in text_upper or "APPROV" in text_upper
-    has_refine = "REFINE" in text_upper or "REFIN" in text_upper
-    if has_approve and not has_refine:
-        logger.info("[CurationAgent] Extracted action type from raw text: APPROVE")
-        return "APPROVE"
-    if has_refine and not has_approve:
-        logger.info("[CurationAgent] Extracted action type from raw text: REFINE")
-        return "REFINE"
-
-    return None
-
-
-def parse_agent_action(response_text: str, num_chunks: int) -> AgentAction:
-    """
-    Parse the curation agent's XML response into an AgentAction.
-
-    Uses a 3-tier strategy to extract action type (exact regex → fuzzy match
-    → keyword scan), then falls back to APPROVE keeping all chunks.
-    """
-    try:
-        # Resolve action type (exact → fuzzy → keyword scan)
-        action_type = _extract_action_type(response_text)
-        if not action_type:
-            logger.warning("Could not determine action type from agent response, defaulting to APPROVE")
-            return _fail_safe_approve(num_chunks, "Parse failure — keeping all chunks")
-
-        # Extract reasoning
-        reasoning_match = re.search(r'<reasoning>(.*?)</reasoning>', response_text, re.DOTALL)
-        reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
-
-        # Extract keep_chunks
-        keep_match = re.search(r'<keep_chunks>\[?(.*?)\]?</keep_chunks>', response_text, re.DOTALL)
-        keep_indices = []
-        if keep_match:
-            keep_str = keep_match.group(1).strip()
-            if keep_str:
-                keep_indices = [int(x.strip()) for x in keep_str.split(",") if x.strip().isdigit()]
-
-        # Extract new_queries (only for REFINE)
-        new_queries = []
-        if action_type == "REFINE":
-            query_matches = re.finditer(
-                r'<query\s+book="([^"]*)">(.*?)</query>', response_text, re.DOTALL
-            )
-            for match in query_matches:
-                book = match.group(1).strip()
-                query = match.group(2).strip()
-                if book.lower() == "all":
-                    book = None
-                new_queries.append({"query": query, "book": book})
-
-        return AgentAction(
-            type=action_type,
-            reasoning=reasoning,
-            keep_indices=keep_indices,
-            new_queries=new_queries
-        )
-
-    except Exception as e:
-        logger.warning(f"Failed to parse agent action: {e}, defaulting to APPROVE")
-        return _fail_safe_approve(num_chunks, "Parse failure — keeping all chunks")
-
-
 class CurationAgent:
-    """
-    Curation agent that evaluates retrieved context,
-    drops irrelevant chunks, optionally fetches more,
-    then approves the curated context for the main LLM.
-    """
+    """Evaluates retrieved chunks, drops noise, optionally issues follow-up
+    searches, and approves a curated context for the main LLM."""
 
-    def __init__(self, search_service, llm_service, qdrant):
+    def __init__(self, search_service, qdrant):
         self.search_service = search_service
-        self.llm_service = llm_service
         self.qdrant = qdrant
 
     async def run(
@@ -182,23 +74,15 @@ class CurationAgent:
         intent: str,
         subject: str,
         initial_chunks: List[Dict],
-        top_k: int
+        top_k: int,
     ) -> AgentResult:
-        """
-        Run the curation loop over retrieved chunks.
-
-        Args:
-            query: The resolved query (references already resolved by the query enhancement step).
-
-        Returns curated chunks for the main LLM, plus metadata.
-        """
         try:
             return await self._run_loop(
                 query=query,
                 intent=intent,
                 subject=subject,
                 initial_chunks=initial_chunks,
-                top_k=top_k
+                top_k=top_k,
             )
         except Exception as e:
             logger.error(f"CurationAgent failed, falling back to single-pass: {e}")
@@ -208,7 +92,7 @@ class CurationAgent:
                 reasoning_trace=[f"Agent error: {e}"],
                 total_agent_tokens=0,
                 total_agent_searches=0,
-                agent_time_ms=0.0
+                agent_time_ms=0.0,
             )
 
     async def _run_loop(
@@ -217,127 +101,124 @@ class CurationAgent:
         intent: str,
         subject: str,
         initial_chunks: List[Dict],
-        top_k: int
+        top_k: int,
     ) -> AgentResult:
-        agent_start_time = time.time()
+        agent_start = time.time()
         context_pool = list(initial_chunks)
-        reasoning_trace = []
-        total_agent_tokens = 0
-        total_agent_searches = 0
+        reasoning_trace: List[str] = []
+        total_tokens = 0
+        total_searches = 0
         max_iterations = settings.agent_max_iterations
 
-        # Get available books for the prompt and book name matching
         available_books = await self.qdrant.get_books()
+
+        agent = Agent(
+            model=build_model(
+                settings.agent_curation_model,
+                settings.agent_curation_reasoning,
+            ),
+            output_type=KeepDecision,
+            system_prompt=get_curation_system_prompt(subject, available_books),
+        )
 
         iteration = 0
         for iteration in range(1, max_iterations + 1):
-            # Build evaluation prompt
-            eval_prompt = get_curation_evaluation_prompt(
+            user_prompt = get_curation_user_prompt(
                 query=query,
-                subject=subject,
                 context_chunks=context_pool,
                 iteration=iteration,
                 max_iterations=max_iterations,
                 previous_reasoning=reasoning_trace,
-                available_books=available_books
             )
 
-            # Call LLM for evaluation
-            eval_result = await self.llm_service.generate(
-                messages=[{"role": "user", "content": eval_prompt}],
-                model=settings.agent_curation_model,
-                reasoning_effort=settings.agent_curation_reasoning
-            )
-            total_agent_tokens += eval_result.get("total_tokens", 0)
+            result = await agent.run(user_prompt)
+            decision: KeepDecision = result.output
 
-            # Parse action
-            action = parse_agent_action(eval_result.get("text", ""), num_chunks=len(context_pool))
+            usage = result.usage()
+            total_tokens += (usage.total_tokens or 0) if usage else 0
+
             reasoning_trace.append(
-                f"[Iter {iteration}] {action.type}: {action.reasoning}"
+                f"[Iter {iteration}] {decision.action}: {decision.reasoning}"
             )
+            self._log_decision(iteration, max_iterations, decision)
 
-            if action.type == "REFINE":
-                logger.info(
-                    f"[CurationAgent] Iter {iteration}/{max_iterations}: REFINE\n"
-                    f"Reasoning: {action.reasoning}\n"
-                    f"Keeping chunks: {action.keep_indices}\n"
-                    f"New queries: {action.new_queries}"
-                )
-            else:
-                logger.info(
-                    f"[CurationAgent] Iter {iteration}/{max_iterations}: "
-                    f"{action.type} — keeping {len(action.keep_indices)} chunks"
-                )
-
-            # Apply keep_chunks filter (1-indexed)
+            # Apply keep filter (1-indexed). Out-of-range indices silently ignored.
             context_pool = [
-                chunk for i, chunk in enumerate(context_pool, 1)
-                if i in action.keep_indices
+                chunk
+                for i, chunk in enumerate(context_pool, 1)
+                if i in decision.keep_indices
             ]
 
-            # Safety floor: if everything was dropped, keep highest-scored initial chunk
+            # Safety floor: never let the pool go empty if we started with chunks.
             if not context_pool and initial_chunks:
                 context_pool = [initial_chunks[0]]
                 reasoning_trace.append(
                     f"[Iter {iteration}] Safety floor: kept top initial chunk"
                 )
 
-            if action.type == "APPROVE" or iteration == max_iterations:
+            if decision.action == "APPROVE" or iteration == max_iterations:
                 break
 
-            # REFINE: validate book names via fuzzy matching, then search
-            if action.new_queries:
-                for q in action.new_queries:
-                    if q.get("book") is not None:
-                        q["book"] = match_book_name(q["book"], available_books)
-
+            if decision.new_queries:
+                resolved_queries = [
+                    {
+                        "query": nq.query,
+                        "book": match_book_name(nq.book, available_books)
+                        if nq.book
+                        else None,
+                    }
+                    for nq in decision.new_queries
+                ]
                 new_results = await self.search_service.search_with_enhanced_queries(
-                    queries=action.new_queries,
+                    queries=resolved_queries,
                     intent=intent,
-                    top_k=top_k
+                    top_k=top_k,
                 )
-                total_agent_searches += len(action.new_queries)
-                context_pool = self._merge_and_deduplicate(
-                    context_pool, new_results
-                )
-
-        agent_time_ms = (time.time() - agent_start_time) * 1000
+                total_searches += len(resolved_queries)
+                context_pool = self._merge_and_deduplicate(context_pool, new_results)
 
         return AgentResult(
             final_chunks=context_pool,
             iterations_used=iteration,
             reasoning_trace=reasoning_trace,
-            total_agent_tokens=total_agent_tokens,
-            total_agent_searches=total_agent_searches,
-            agent_time_ms=agent_time_ms
+            total_agent_tokens=total_tokens,
+            total_agent_searches=total_searches,
+            agent_time_ms=(time.time() - agent_start) * 1000,
         )
 
+    @staticmethod
+    def _log_decision(
+        iteration: int, max_iterations: int, decision: KeepDecision
+    ) -> None:
+        if decision.action == "REFINE":
+            logger.info(
+                f"[CurationAgent] Iter {iteration}/{max_iterations}: REFINE\n"
+                f"Reasoning: {decision.reasoning}\n"
+                f"Keeping chunks: {decision.keep_indices}\n"
+                f"New queries: {[(q.query, q.book) for q in decision.new_queries]}"
+            )
+        else:
+            logger.info(
+                f"[CurationAgent] Iter {iteration}/{max_iterations}: "
+                f"{decision.action} — keeping {len(decision.keep_indices)} chunks"
+            )
+
+    @staticmethod
     def _merge_and_deduplicate(
-        self,
-        existing: List[Dict],
-        new_results: List[Dict]
+        existing: List[Dict], new_results: List[Dict]
     ) -> List[Dict]:
-        """Merge new search results into existing pool, dedup by text hash, cap at max."""
-        seen_texts = set()
-        merged = []
+        """Merge new search results into the pool, dedup by text hash, cap at max."""
+        seen: set = set()
+        merged: List[Dict] = []
 
-        # Existing chunks first (preserve order)
-        for chunk in existing:
+        for chunk in [*existing, *new_results]:
             text_hash = hashlib.md5(chunk["text"].encode()).hexdigest()
-            if text_hash not in seen_texts:
-                seen_texts.add(text_hash)
+            if text_hash not in seen:
+                seen.add(text_hash)
                 merged.append(chunk)
 
-        # Add new results
-        for chunk in new_results:
-            text_hash = hashlib.md5(chunk["text"].encode()).hexdigest()
-            if text_hash not in seen_texts:
-                seen_texts.add(text_hash)
-                merged.append(chunk)
-
-        # Cap at max context chunks (drop lowest scored)
         if len(merged) > settings.agent_max_context_chunks:
             merged.sort(key=lambda x: x.get("score", 0), reverse=True)
-            merged = merged[:settings.agent_max_context_chunks]
+            merged = merged[: settings.agent_max_context_chunks]
 
         return merged

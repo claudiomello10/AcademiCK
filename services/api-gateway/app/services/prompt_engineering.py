@@ -232,93 +232,94 @@ def format_context_numbered(chunks: List[Dict]) -> str:
     return "\n\n".join(formatted)
 
 
-def get_curation_evaluation_prompt(
-    query: str,
-    subject: str,
-    context_chunks: List[Dict],
-    iteration: int,
-    max_iterations: int,
-    previous_reasoning: List[str],
-    available_books: List[str]
-) -> str:
+def get_curation_system_prompt(subject: str, available_books: List[str]) -> str:
+    """Static system prompt for the curation agent — set once per request.
+
+    Behavior, rules, and the available-books catalogue. Per-iteration content
+    (chunks, iteration counter, previous reasoning) goes in the user prompt.
     """
-    Generate the evaluation prompt for the context curation agent.
-
-    The agent evaluates retrieved chunks and decides which to keep/drop,
-    optionally requesting additional searches. It never generates the answer.
-
-    The query should already have references resolved (e.g., "explain that further"
-    becomes "explain backpropagation further") by the query enhancement step.
-    """
-    numbered_context = format_context_numbered(context_chunks)
-
-    previous_reasoning_section = ""
-    if previous_reasoning:
-        previous_reasoning_section = "Previous reasoning:\n" + "\n".join(previous_reasoning) + "\n"
-
-    force_answer_note = ""
-    if iteration == max_iterations:
-        force_answer_note = "\nIMPORTANT: This is the final iteration. You MUST choose APPROVE.\nKeep the best chunks available — the main LLM will do its best with them.\n"
-
-    books_list = "\n".join(f"- {book}" for book in available_books) if available_books else "No specific books available"
+    books_list = (
+        "\n".join(f"- {book}" for book in available_books)
+        if available_books
+        else "No specific books available"
+    )
 
     return f"""You are a context curation agent for an academic RAG system about {subject}.
 You do NOT answer the student. Your only job is to decide which retrieved
 chunks are relevant and whether more information needs to be fetched.
 A separate LLM will generate the final answer using the chunks you approve.
 
-The student asked: "{query}"
+For each iteration you receive a numbered list of context chunks and must
+return a structured decision with these fields:
+- action: "APPROVE" when the context is good enough to answer, "REFINE" when
+  noise should be dropped and/or more information is needed.
+- reasoning: a brief justification.
+- keep_indices: 1-indexed chunk numbers to keep. Unlisted chunks are dropped.
+  Applies to both APPROVE and REFINE. An empty list is valid when nothing is
+  relevant — the system will tell the student the topic was not found.
+- new_queries: follow-up search queries. Required (non-empty) for REFINE,
+  ignored for APPROVE. Each query has a `query` string and a `book` (exact
+  book name from the catalogue below, or null to search all books).
+
+Curation guidelines:
+- Keep only chunks that are directly relevant. Less noise = better final answer.
+- Most retrievals include irrelevant material — be willing to drop aggressively.
+- Consider what critical information is missing that a follow-up search could find.
+
+Query generation rules for REFINE:
+Your new queries are embedded and matched by semantic similarity against
+textbook chunks in a vector database. To get good matches:
+- Write declarative statements that read like textbook prose. Do NOT write
+  commands or questions.
+  - BAD: "Describe the gradient descent convergence conditions"
+  - GOOD: "Gradient descent converges when the learning rate is sufficiently
+    small and the loss function is convex"
+- Use the specific technical terms a textbook author would use.
+- Do NOT write structural/navigational queries like "table of contents",
+  "overview of topic X", or "introduction to Y" — these never match content.
+- Be precise about what information is missing. Each query should target a
+  different aspect to maximize coverage.
+- If you know the concept is likely in a specific book, target that book
+  instead of searching all. Book names must match the catalogue exactly.
+
+Available books:
+{books_list}"""
+
+
+def get_curation_user_prompt(
+    query: str,
+    context_chunks: List[Dict],
+    iteration: int,
+    max_iterations: int,
+    previous_reasoning: List[str],
+) -> str:
+    """Per-iteration user prompt for the curation agent.
+
+    The query should already have references resolved (e.g., "explain that
+    further" → "explain backpropagation further") by the query enhancement step.
+    """
+    numbered_context = format_context_numbered(context_chunks)
+
+    previous_reasoning_section = ""
+    if previous_reasoning:
+        previous_reasoning_section = (
+            "Previous reasoning:\n" + "\n".join(previous_reasoning) + "\n\n"
+        )
+
+    force_answer_note = ""
+    if iteration == max_iterations:
+        force_answer_note = (
+            "\nIMPORTANT: This is the final iteration. You MUST choose APPROVE.\n"
+            "Keep the best chunks available — the main LLM will do its best with them.\n"
+        )
+
+    return f"""The student asked: "{query}"
 Iteration: {iteration}/{max_iterations}
 
-Here are the retrieved context chunks:
+Retrieved context chunks:
 
 {numbered_context}
 
-{previous_reasoning_section}
-Your task: Evaluate the retrieved chunks and decide whether they are
-sufficient for another LLM to answer the student's query well.
-Most retrievals include noise — your job is to curate.
-
-Consider:
-- Which chunks are directly relevant to the query?
-- Which chunks are noise or off-topic and should be dropped?
-- Is any critical information missing that a follow-up search could find?
-
-Respond with ONE action in XML format:
-
-<action type="REFINE">
-<reasoning>Brief explanation of what's wrong with current context</reasoning>
-<keep_chunks>[comma-separated indices of chunks to KEEP, e.g. 1,3,5]</keep_chunks>
-<new_queries>
-<query book="all">search query if needed</query>
-</new_queries>
-</action>
-
-<action type="APPROVE">
-<reasoning>Brief explanation of why context is sufficient</reasoning>
-<keep_chunks>[comma-separated indices of chunks to KEEP, e.g. 1,2,3,4]</keep_chunks>
-</action>
-
-Rules:
-- In BOTH actions, you MUST specify which chunks to keep. Unlisted chunks are dropped.
-- REFINE must include at least one <query> in <new_queries> to fetch additional context.
-- For <query> tags, set book="all" to search all books, or book="exact_book_name" to target a specific book.
-- The book name must be written exactly as listed below. Do not omit or add any part of the name.
-- Keep only chunks that are directly relevant. Less noise = better final answer.
-- If no chunks are relevant, keep an empty list — the system will tell the student the topic was not found in the books.
-- Do NOT generate an answer. Only curate the context.
-
-Query generation rules for REFINE:
-Your new queries will be embedded and matched via semantic similarity against textbook chunks stored in a vector database. To get good matches, follow these rules strictly:
-- Write queries as declarative statements that resemble how the content would actually be written in a textbook paragraph. DO NOT write commands, instructions, or questions — write statements. The database contains textbook text, so the closer your query looks like actual textbook prose, the better the match.
-  - BAD: "Describe the gradient descent convergence conditions" (command)
-  - GOOD: "Gradient descent converges when the learning rate is sufficiently small and the loss function is convex" (declarative)
-- Use the specific technical terms, definitions, and formal names that a textbook author would use when explaining the concept.
-- DO NOT write structural or navigational queries like "table of contents", "list of chapters", "overview of topic X", "introduction to Y", or "summary of Z" — these will not match any content because the database contains textbook paragraphs, not metadata.
-- DO NOT write vague or overly broad queries. Be precise about what information is missing.
-- Each query should target a different aspect of the missing information to maximize coverage.
-- If you know the concept is likely in a specific book, target that book instead of searching all.
-
-Available books:
-{books_list}
+{previous_reasoning_section}Decide whether this context is sufficient for the
+main LLM to answer the student's query well. Return your structured decision.
 {force_answer_note}"""

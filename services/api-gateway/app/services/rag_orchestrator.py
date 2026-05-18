@@ -179,7 +179,6 @@ class RAGOrchestrator:
         if settings.agent_enabled and search_results:
             agent = CurationAgent(
                 search_service=self.search_service,
-                llm_service=self.llm_service,
                 qdrant=self.qdrant
             )
             agent_result = await agent.run(
