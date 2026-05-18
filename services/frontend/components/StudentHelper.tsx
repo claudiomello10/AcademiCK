@@ -6,7 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/com
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import Image from 'next/image';
-import { AlertCircle, Send, Loader2, LogOut, Book, MessageSquare, Plus, ChevronDown, History, X, Trash2 } from 'lucide-react';
+import { AlertCircle, Send, Loader2, LogOut, Book, MessageSquare, Plus, ChevronDown, History, X, Trash2, Check, Sparkles, RefreshCw } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -40,12 +40,85 @@ interface Conversation {
     updated_at: string | null;
 }
 
+// Per-stage progress event coming over SSE from the backend.
+// Labels are produced by the backend so copy can change server-side.
+interface Stage {
+    stage: string;        // "intent" | "enhancing" | "searching" | "curating" | "generating"
+    label: string;        // human-readable label (Portuguese)
+    queries?: number;     // searching: number of queries issued
+    iteration?: number;   // curating: 1-indexed iteration number
+    max_iterations?: number;
+    action?: 'APPROVE' | 'REFINE';
+    kept?: number;
+    new_searches?: number;
+    done: boolean;        // set to true when superseded by the next stage
+}
+
+interface MessageMetadata {
+    sources: number;
+    processingMs: number;
+    agentIterations?: number;
+    agentSearches?: number;
+    reasoningTrace?: string[];
+}
+
+interface ConversationMessage {
+    text: string;
+    isAI: boolean;
+    metadata?: MessageMetadata;
+}
+
+// Small header rendered at the top of an assistant bubble. Shows source
+// count + time, an optional "Refined N×" badge, and a toggle for the
+// reasoning trace when it's present (backend gates that via the
+// REASONING_TRACE_VISIBLE env flag — null when disabled).
+const AssistantMessageHeader = ({ metadata }: { metadata: MessageMetadata }) => {
+    const [showTrace, setShowTrace] = useState(false);
+    const seconds = (metadata.processingMs / 1000).toFixed(1);
+    const hasTrace = !!metadata.reasoningTrace && metadata.reasoningTrace.length > 0;
+    const refined = (metadata.agentIterations ?? 0) > 1;
+    return (
+        <div className="mb-2 pb-2 border-b border-primary/20 text-xs text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
+            {refined && (
+                <span className="inline-flex items-center gap-1">
+                    <RefreshCw className="h-3 w-3" />
+                    Refinado {metadata.agentIterations}×
+                </span>
+            )}
+            {refined && <span aria-hidden>·</span>}
+            <span>{metadata.sources} fontes</span>
+            <span aria-hidden>·</span>
+            <span>{seconds}s</span>
+            {hasTrace && (
+                <>
+                    <span aria-hidden>·</span>
+                    <button
+                        type="button"
+                        onClick={() => setShowTrace(v => !v)}
+                        className="underline underline-offset-2 hover:text-primary"
+                    >
+                        {showTrace ? 'ocultar raciocínio' : 'ver raciocínio'}
+                    </button>
+                </>
+            )}
+            {showTrace && hasTrace && (
+                <div className="w-full mt-2 font-mono text-[11px] bg-background/60 rounded p-2 space-y-1">
+                    {metadata.reasoningTrace!.map((line, i) => (
+                        <div key={i}>{line}</div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
 interface MessageProps {
     message: string;
     isAI: boolean;
+    metadata?: MessageMetadata;
 }
 
-const Message = ({ message, isAI }: MessageProps) => (
+const Message = ({ message, isAI, metadata }: MessageProps) => (
     <div className={`flex gap-4 ${isAI ? 'justify-start' : 'justify-end'} mb-4`}>
         {isAI && (
             <Avatar className="rounded-lg shadow-sm flex-shrink-0 mt-1">
@@ -58,6 +131,7 @@ const Message = ({ message, isAI }: MessageProps) => (
                 {isAI ? 'AcademiCK' : 'Você'}
             </span>
             <div className={`rounded-3xl p-3 shadow-sm border ${isAI ? 'bg-secondary rounded-tl-none border-primary border-2' : 'bg-primary text-primary-foreground rounded-tr-none border-primary'} max-w-full`}>
+                {isAI && metadata && <AssistantMessageHeader metadata={metadata} />}
                 {isAI ? (
                     <ReactMarkdown
                         className="prose prose-base max-w-none text-foreground [&>p]:mb-2 [&>p:last-child]:mb-0"
@@ -109,6 +183,54 @@ const Message = ({ message, isAI }: MessageProps) => (
                 <AvatarFallback className="rounded-full">Você</AvatarFallback>
             </Avatar>
         )}
+    </div>
+);
+
+// Live progress checklist rendered inside an assistant-shaped bubble while
+// the backend is working. Stages are fully driven by the SSE events — no
+// hardcoded labels here. When the answer starts streaming, the parent
+// swaps this for a streaming-text Message bubble.
+const AgentProgress = ({ stages, streamingText }: { stages: Stage[]; streamingText: string }) => (
+    <div className="flex gap-4 justify-start mb-4">
+        <Avatar className="rounded-lg shadow-sm flex-shrink-0 mt-1">
+            <AvatarImage src="/app_icon_reduced.png" alt="AI" className="rounded-lg" />
+            <AvatarFallback className="rounded-lg">AI</AvatarFallback>
+        </Avatar>
+        <div className="flex flex-col items-start max-w-[80%]">
+            <span className="text-sm mb-1 text-primary">AcademiCK</span>
+            <div className="rounded-3xl p-3 shadow-sm border bg-secondary rounded-tl-none border-primary border-2 max-w-full">
+                {streamingText ? (
+                    <ReactMarkdown
+                        className="prose prose-base max-w-none text-foreground [&>p]:mb-2 [&>p:last-child]:mb-0"
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                    >
+                        {streamingText}
+                    </ReactMarkdown>
+                ) : (
+                    <ul className="text-sm space-y-1.5">
+                        {stages.map((s, i) => (
+                            <li key={i} className="flex items-center gap-2">
+                                {s.done ? (
+                                    <Check className="h-4 w-4 text-primary flex-shrink-0" />
+                                ) : (
+                                    <Loader2 className="h-4 w-4 text-primary animate-spin flex-shrink-0" />
+                                )}
+                                <span className={s.done ? 'text-muted-foreground' : 'text-foreground'}>
+                                    {s.label}
+                                </span>
+                            </li>
+                        ))}
+                        {stages.length === 0 && (
+                            <li className="flex items-center gap-2 text-muted-foreground">
+                                <Sparkles className="h-4 w-4 animate-pulse" />
+                                Pensando...
+                            </li>
+                        )}
+                    </ul>
+                )}
+            </div>
+        </div>
     </div>
 );
 
@@ -176,9 +298,12 @@ const StudentHelper = () => {
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [username, setUsername] = useState<string | null>(null);
     const [query, setQuery] = useState('');
-    const [conversation, setConversation] = useState<{ text: string; isAI: boolean; }[]>([]);
+    const [conversation, setConversation] = useState<ConversationMessage[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // Live streaming state for the in-flight assistant turn.
+    const [stages, setStages] = useState<Stage[]>([]);
+    const [streamingText, setStreamingText] = useState('');
     const [model, setModel] = useState('gpt-5-mini');
     const [subject, setSubject] = useState(process.env.NEXT_PUBLIC_DEFAULT_SUBJECT || 'Machine Learning');
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
@@ -488,9 +613,15 @@ const StudentHelper = () => {
         subject: string; // Add subject to the request body
     }
 
-    interface GenerateResponseData {
+    interface DoneEventPayload {
         response: string;
-        detail?: string;
+        intent: string;
+        sources: unknown[];
+        model_used: string;
+        processing_time_ms: number;
+        agent_iterations?: number | null;
+        agent_searches?: number | null;
+        reasoning_trace?: string[] | null;
     }
 
     // Modified handleInputKeyDown to handle @ symbol
@@ -695,6 +826,41 @@ const StudentHelper = () => {
         }
     };
 
+    // Consume an SSE stream from `response.body`, invoking the provided
+    // handler for each parsed event. Keeps the parser local — the only
+    // SSE consumer in the app right now is the chat endpoint.
+    const consumeSSE = async (
+        body: ReadableStream<Uint8Array>,
+        onEvent: (event: string, data: Record<string, unknown>) => void,
+    ): Promise<void> => {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            // SSE frames are separated by a blank line (\n\n).
+            let sep: number;
+            while ((sep = buffer.indexOf('\n\n')) !== -1) {
+                const frame = buffer.slice(0, sep);
+                buffer = buffer.slice(sep + 2);
+                let eventType = 'message';
+                const dataLines: string[] = [];
+                for (const line of frame.split('\n')) {
+                    if (line.startsWith('event:')) eventType = line.slice(6).trim();
+                    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+                }
+                if (dataLines.length === 0) continue;
+                try {
+                    onEvent(eventType, JSON.parse(dataLines.join('\n')));
+                } catch (e) {
+                    console.warn('Failed to parse SSE frame', e);
+                }
+            }
+        }
+    };
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!query.trim() || !sessionId) return;
@@ -703,32 +869,100 @@ const StudentHelper = () => {
         setQuery('');
         setIsLoading(true);
         setError(null);
+        setStages([]);
+        setStreamingText('');
 
+        // Optimistic user message appended before the network call. On
+        // error this entry is removed and the typed text restored.
         setConversation(prev => [...prev, { text: userQuery, isAI: false }]);
+
+        const rollbackOnError = (message: string) => {
+            setConversation(prev =>
+                prev.length > 0 && !prev[prev.length - 1].isAI
+                    ? prev.slice(0, -1)
+                    : prev,
+            );
+            setQuery(userQuery);
+            setError(message);
+        };
 
         try {
             const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.chat(sessionId)}`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
                 body: JSON.stringify({
                     query: userQuery,
-                    model: model,
-                    subject: subject // Include subject in the API call
-                } as GenerateResponseBody)
+                    model,
+                    subject,
+                } as GenerateResponseBody),
             });
 
-            const data: GenerateResponseData = await response.json();
-            if (response.ok) {
-                setConversation(prev => [...prev, { text: data.response, isAI: true }]);
-            } else {
-                throw new Error(data.detail || 'Falha ao obter resposta');
+            if (!response.ok || !response.body) {
+                let detail = 'Falha ao obter resposta';
+                try {
+                    const errorBody = await response.json();
+                    if (errorBody?.detail) detail = String(errorBody.detail);
+                } catch { /* response wasn't JSON */ }
+                rollbackOnError(detail);
+                return;
+            }
+
+            let accumulated = '';
+            let finalized = false;
+
+            await consumeSSE(response.body, (event, data) => {
+                switch (event) {
+                    case 'status': {
+                        setStages(prev => {
+                            const next = prev.map(s => ({ ...s, done: true }));
+                            next.push({ ...(data as Stage), done: false });
+                            return next;
+                        });
+                        break;
+                    }
+                    case 'token': {
+                        const delta = String(data.text ?? '');
+                        accumulated += delta;
+                        setStreamingText(accumulated);
+                        break;
+                    }
+                    case 'done': {
+                        finalized = true;
+                        const payload = (data.payload ?? data) as DoneEventPayload;
+                        setConversation(prev => [
+                            ...prev,
+                            {
+                                text: payload.response,
+                                isAI: true,
+                                metadata: {
+                                    sources: payload.sources?.length ?? 0,
+                                    processingMs: payload.processing_time_ms,
+                                    agentIterations: payload.agent_iterations ?? undefined,
+                                    agentSearches: payload.agent_searches ?? undefined,
+                                    reasoningTrace: payload.reasoning_trace ?? undefined,
+                                },
+                            },
+                        ]);
+                        break;
+                    }
+                    case 'error': {
+                        finalized = true;
+                        rollbackOnError(String(data.message ?? 'Erro durante a geração da resposta'));
+                        break;
+                    }
+                }
+            });
+
+            if (!finalized) {
+                // Stream ended without a done/error event — treat as failure.
+                rollbackOnError('A conexão foi encerrada antes da resposta ser concluída.');
             }
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : 'Erro desconhecido');
+            rollbackOnError(err instanceof Error ? err.message : 'Erro desconhecido');
         } finally {
             setIsLoading(false);
+            setStages([]);
+            setStreamingText('');
         }
     };
 
@@ -954,13 +1188,15 @@ const StudentHelper = () => {
                     <ScrollArea className="flex-1 px-6 py-4" id="conversation-scroll">
                         <div className="space-y-1">
                             {conversation.map((msg, idx) => (
-                                <Message key={idx} message={msg.text} isAI={msg.isAI} />
+                                <Message
+                                    key={idx}
+                                    message={msg.text}
+                                    isAI={msg.isAI}
+                                    metadata={msg.metadata}
+                                />
                             ))}
                             {isLoading && (
-                                <div className="flex items-center gap-3 text-muted-foreground p-4">
-                                    <Loader2 className="h-5 w-5 animate-spin" />
-                                    <span>Pensando...</span>
-                                </div>
+                                <AgentProgress stages={stages} streamingText={streamingText} />
                             )}
                         </div>
                     </ScrollArea>
