@@ -24,6 +24,9 @@ aiohttp==3.12.11
 openai
 anthropic
 deepseek
+
+# Agent framework
+pydantic-ai-slim[openai,anthropic]==1.97.0
 # Security
 bcrypt==4.3.0
 python-multipart==0.0.20
