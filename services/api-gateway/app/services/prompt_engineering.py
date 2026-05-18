@@ -139,73 +139,62 @@ Here is the context for the user query retrieved from the books:
 """
 
 
-def get_enhanced_query_prompt(query: str, subject: str, available_books: List[str], conversation_history: List[Dict] = None) -> str:
+def get_enhancement_system_prompt(subject: str, available_books: List[str]) -> str:
+    """Static system prompt for the query enhancement agent.
+
+    The conversation history is supplied to the agent via Pydantic AI's
+    message_history parameter; the user query is the user prompt. This
+    function only describes behavior and the available-books catalogue.
     """
-    Generate prompt for query enhancement.
+    books_list = (
+        "\n".join(f"- {book}" for book in available_books[:10])
+        if available_books
+        else "No specific books available"
+    )
 
-    Used to generate multiple focused search queries from a user query.
-    """
-    books_list = "\n".join(f"- {book}" for book in available_books[:10]) if available_books else "No specific books available"
+    return f"""You are a specialized RAG (Retrieval-Augmented Generation) search term generator for an academic system about {subject}.
 
-    conversation_context = ""
-    if conversation_history:
-        for msg in conversation_history[-6:]:  # Last 6 messages
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "assistant":
-                conversation_context += f"<Assistant message>\n{content}\n</Assistant message>\n"
-            else:
-                conversation_context += f"<User message>\n{content}\n</User message>\n"
+For each student message you must produce a structured output with these fields:
+- resolved_query: the student's question with all references resolved (e.g.,
+  "that", "it", "the previous topic") using the conversation history. The
+  resolved query must be a minimal rewrite — only replace pronouns and
+  references with the actual terms they refer to. Do NOT add information,
+  elaborate, explain concepts, translate, or expand. If the query is already
+  self-contained, repeat it exactly as-is. When a <Book>name</Book> tag
+  appears, simply replace it with "the book name" (or "o livro name" if the
+  student writes in Portuguese). Examples:
+    - "Explain <Book>biscect-kmeans</Book>" → "Explain the book biscect-kmeans"
+    - "Explique <Book>biscect-kmeans</Book>" → "Explique o livro biscect-kmeans"
+    - "What was that concept about?" (previous topic was gradient descent)
+      → "What was gradient descent about?"
+- retrievals: up to 3 focused search queries. Each has a `query` and a `book`
+  (exact book name from the catalogue below, or null to search all books).
 
-    return f"""You are a specialized RAG (Retrieval-Augmented Generation) search term generator. Your task is to generate up to 3 focused search queries between <retrievalX> tags that:
+Query generation rules:
+Your queries are embedded and matched by semantic similarity against textbook
+chunks in a vector database. To get good matches:
+- Write declarative statements that resemble textbook prose. Do NOT write
+  commands, instructions, or questions — write statements.
+    - BAD: "Describe the architecture of the multi-task learning model"
+    - GOOD: "The multi-task learning architecture uses a shared encoder with
+      task-specific attention modules"
+- Use the specific technical terms, definitions, and formal names a textbook
+  author would use.
+- Do NOT write structural or navigational queries like "table of contents",
+  "overview of topic X", or "introduction to Y" — these never match content.
+- Be precise. Break complex queries into simpler core components. Each query
+  should target a different aspect of the same topic to maximize coverage.
+- The <Book>name</Book> tag in user messages is ONLY a source filter. The
+  text inside is NOT a topic — it's the title of a book/article. Do not
+  include the tag content in the query text or the resolved query, and do
+  not try to explain it as a concept.
+- If a <Book>name</Book> tag is present, set `book` to exactly that name
+  (no omissions, no additions). If absent or not necessary, set `book` to
+  null to search all books. If a past message mentioned a book but it's not
+  needed for the current query, set `book` to null or to a different book.
 
-- Target specific textbook content
-- Use formal academic terminology
-- Focus on fundamental concepts, definitions, theorems
-- Break complex queries into core components
-- Maximize relevant context retrieval
-- Only focus on a specific book if the user requires it
-- If a specific book is mentioned in a past message, if its not necessary to use the book, use book="all" or another book.
-
-Guidelines for search queries:
-
-Your queries will be embedded and matched via semantic similarity against textbook chunks stored in a vector database. To get good matches, follow these rules strictly:
-- Before generating the search queries, write a <resolved_query> that restates the student's question with all references resolved (e.g., "that", "it", "the previous topic") using the conversation history. The resolved query must be a minimal rewrite — only replace pronouns and references with the actual terms they refer to. Do NOT add information, elaborate, explain concepts, translate, or expand the query beyond what the student wrote. If the query is already self-contained, repeat it exactly as-is. When a <Book>name</Book> tag appears, simply replace it with "the book name" (or "o livro name" if the student is writing in Portuguese). Examples:
-  - "Explain <Book>biscect-kmeans</Book>" → "Explain the book biscect-kmeans"
-  - "Explique <Book>biscect-kmeans</Book>" → "Explique o livro biscect-kmeans"
-  - "What was that concept about?" (previous topic was gradient descent) → "What was gradient descent about?"
-- Write queries as declarative statements that resemble how the content would actually be written in a textbook paragraph. DO NOT write commands, instructions, or questions — write statements. The database contains textbook text, so the closer your query looks like actual textbook prose, the better the match.
-  - BAD: "Describe the architecture of the multi-task learning model" (this is a command, not textbook text)
-  - BAD: "Explain how attention mechanisms weight features for each task" (this is an instruction)
-  - GOOD: "The multi-task learning architecture uses a shared encoder with task-specific attention modules" (this resembles textbook prose)
-  - GOOD: "Attention mechanisms selectively weight shared features for each task during end-to-end training" (declarative statement)
-- Use the specific technical terms, definitions, and formal names that a textbook author would use when explaining the concept.
-- DO NOT write structural or navigational queries like "table of contents", "list of chapters", "overview of topic X", "introduction to Y", or "summary of Z" — these will not match any content because the database contains textbook paragraphs, not metadata.
-- DO NOT write vague or overly broad queries. Be precise about the specific concept or information the student is asking about.
-- Break down complex queries into simpler, core components.
-- The search queries should all be focused on the same topic, but each should target a different aspect to maximize coverage.
-- It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books.
-- The <Book>name</Book> tag in user messages is ONLY a book/article name used to filter which source to search. The text inside the tag is NOT a topic or concept — it is just the title of a book or article. Do not include it in the query text or the resolved query, and do not try to explain it as a concept. For example, "Explain <Book>biscect-kmeans</Book>" means "Explain the contents of the book/article titled 'biscect-kmeans'".
-- If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book".
-- The book name should be written exactly as it is written in the tag <Book>name_of_the_book</Book>, do not omit any part of the name, and do not add any part to the name.
-- If no specific book is mentioned or if the search should be performed across all available resources, use book="all".
-- Focus only on search term generation. Do not provide explanations or answers.
-- The subject of the conversation is {subject}.
-
-{conversation_context}
-
-Output format:
-<resolved_query>the student's question with all references resolved</resolved_query>
-<retrieval1 book="all">search query 1</retrieval1>
-<retrieval2 book="book_name">search query 2</retrieval2>
-<retrieval3 book="book_name">search query 3</retrieval3>
-
-<Current User Message>
-{query}
-</Current User Message>
-
-The user response format demands should not affect the search term generation. The search term generation should be focused on generating the search terms that will be used to retrieve the information from the books.
-"""
+Available books:
+{books_list}"""
 
 
 def format_context_numbered(chunks: List[Dict]) -> str:

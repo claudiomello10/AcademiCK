@@ -2,22 +2,77 @@
 
 import asyncio
 import time
-import re
 from typing import Dict, List, Optional, Any
 import logging
+
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from app.clients.intent_client import IntentClient
 from app.clients.embedding_client import EmbeddingClient
 from app.clients.qdrant_client import QdrantManager
 from app.services.search_service import SearchService
 from app.services.llm_service import LLMService
-from app.services.prompt_engineering import get_rag_system_prompt, get_enhanced_query_prompt
+from app.services.agent_models import build_model
+from app.services.prompt_engineering import (
+    get_rag_system_prompt,
+    get_enhancement_system_prompt,
+)
 from app.services.reasoning_agent import CurationAgent
 from app.utils.matching import match_book_name
 from redis import asyncio as aioredis
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class RetrievalQuery(BaseModel):
+    """A single search query generated for retrieval."""
+
+    query: str = Field(description="Declarative textbook-style search query.")
+    book: Optional[str] = Field(
+        default=None,
+        description="Exact book name to target, or null to search all books.",
+    )
+
+
+class EnhancedQueries(BaseModel):
+    """Structured output of the query enhancement agent."""
+
+    resolved_query: str = Field(
+        description=(
+            "Student's question with all pronouns and references resolved "
+            "using conversation history. Minimal rewrite — no elaboration."
+        )
+    )
+    retrievals: List[RetrievalQuery] = Field(
+        default_factory=list,
+        description="Up to 3 focused search queries to issue.",
+    )
+
+
+def _to_pydantic_ai_history(
+    messages: Optional[List[Dict]], limit: int = 6
+) -> List[ModelMessage]:
+    """Convert our list-of-dicts conversation history to Pydantic AI messages."""
+    if not messages:
+        return []
+    history: List[ModelMessage] = []
+    for msg in messages[-limit:]:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "assistant":
+            history.append(ModelResponse(parts=[TextPart(content=content)]))
+        else:
+            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+    return history
 
 
 class RAGOrchestrator:
@@ -45,81 +100,52 @@ class RAGOrchestrator:
         subject: str,
         conversation_history: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
-        """
-        Generate multiple focused search queries from the user query.
-        Uses a fast model (GPT-5 Nano) for query enhancement.
+        """Generate focused search queries from the user query via a typed agent.
 
-        Returns:
-            Dict with "retrievals" (list of {"query": str, "book": Optional[str]})
-            and "resolved_query" (str with references resolved from conversation context)
+        Returns dict with "retrievals" (list of {"query", "book"}) and
+        "resolved_query" (string with references resolved from history).
         """
         try:
-            # Get available books
             available_books = await self.qdrant.get_books()
 
-            # Generate enhancement prompt
-            prompt = get_enhanced_query_prompt(
-                query=query,
-                subject=subject,
-                available_books=available_books,
-                conversation_history=conversation_history
+            agent = Agent(
+                model=build_model(
+                    settings.query_enhancement_model,
+                    settings.query_enhancement_reasoning,
+                ),
+                output_type=EnhancedQueries,
+                system_prompt=get_enhancement_system_prompt(subject, available_books),
             )
 
-            # Call LLM for query enhancement
-            messages = [{"role": "user", "content": prompt}]
-            llm_result = await self.llm_service.generate(
-                messages=messages,
-                model=settings.query_enhancement_model,
-                reasoning_effort=settings.query_enhancement_reasoning
+            result = await agent.run(
+                query,
+                message_history=_to_pydantic_ai_history(conversation_history),
             )
-            response = llm_result["text"] or ""
+            output: EnhancedQueries = result.output
 
-            logger.debug(f"Query enhancement response: {response}")
-
-            # Parse the XML-like response
-            retrievals = []
-            for i in range(1, 4):
-                pattern = f'<retrieval{i} book="([^"]+)">(.*?)</retrieval{i}>'
-                match = re.search(pattern, response, re.DOTALL)
-                if match:
-                    book = match.group(1).strip()
-                    retrieval_query = match.group(2).strip()
-
-                    # Convert "all" to None for no book filter
-                    if book.lower() == "all":
-                        book = None
-
-                    retrievals.append({
-                        "query": retrieval_query,
-                        "book": book
-                    })
-
-            # Validate book names against available books using fuzzy matching
-            for retrieval in retrievals:
-                if retrieval["book"] is not None:
-                    retrieval["book"] = match_book_name(
-                        retrieval["book"], available_books
-                    )
-
-            # Extract resolved query (references resolved from conversation context)
-            resolved_match = re.search(r'<resolved_query>(.*?)</resolved_query>', response, re.DOTALL)
-            resolved_query = resolved_match.group(1).strip() if resolved_match else query
+            retrievals = [
+                {
+                    "query": r.query,
+                    "book": match_book_name(r.book, available_books) if r.book else None,
+                }
+                for r in output.retrievals
+            ]
 
             logger.info(
                 f"Generated {len(retrievals)} enhanced queries:\n"
-                f"Resolved query: '{resolved_query}'\n"
+                f"Resolved query: '{output.resolved_query}'\n"
                 f"Retrievals: {retrievals}"
             )
             return {
-                "retrievals": retrievals if retrievals else [{"query": query, "book": None}],
-                "resolved_query": resolved_query
+                "retrievals": retrievals or [{"query": query, "book": None}],
+                "resolved_query": output.resolved_query or query,
             }
 
         except Exception as e:
             logger.warning(f"Query enhancement failed, using original query: {e}")
             return {
                 "retrievals": [{"query": query, "book": None}],
-                "resolved_query": query
+                "resolved_query": query,
             }
 
     async def process_query(
