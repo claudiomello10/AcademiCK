@@ -11,9 +11,10 @@ When using docker compose, these are set automatically from .env.
 When running standalone, export them in your shell before starting the service.
 """
 
+import json
 import os
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import List, Optional
 
 
 def _require_env(name: str) -> str:
@@ -63,8 +64,15 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
     deepseek_api_key: Optional[str] = os.getenv("DEEPSEEK_API_KEY")
 
-    # Default LLM model
+    # Default LLM model (server-side request fallback used when a request
+    # omits the `model` field — distinct from the frontend selector below)
     default_model: str = os.getenv("DEFAULT_MODEL", "gpt-5-mini")
+
+    # Models exposed in the frontend selector. Served at runtime via
+    # GET /api/v1/models, so changing these only requires a container
+    # restart (no frontend rebuild). Parsed/validated at startup below.
+    available_models_raw: str = _require_env("AVAILABLE_MODELS")
+    default_model_frontend: str = _require_env("DEFAULT_MODEL_FRONTEND")
 
     # Model for query enhancement (fast and cheap, runs on every query)
     query_enhancement_model: str = os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-5-nano")
@@ -116,3 +124,43 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _parse_frontend_models(raw: str, default: str) -> List[dict]:
+    """Parse and validate AVAILABLE_MODELS at startup (fail-fast).
+
+    Returns the list of {provider, value, label} dicts. Raises RuntimeError
+    with a clear message if the value is malformed or DEFAULT_MODEL_FRONTEND
+    is not among the listed models.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"AVAILABLE_MODELS is not valid JSON: {exc}. "
+            f"Expected a JSON array of {{provider, value, label}} objects."
+        ) from exc
+
+    if not isinstance(parsed, list) or not parsed:
+        raise RuntimeError("AVAILABLE_MODELS must be a non-empty JSON array.")
+
+    for item in parsed:
+        if not isinstance(item, dict) or not {"provider", "value", "label"} <= item.keys():
+            raise RuntimeError(
+                "Each AVAILABLE_MODELS entry must be an object with "
+                "'provider', 'value' and 'label' keys."
+            )
+
+    if not any(item["value"] == default for item in parsed):
+        raise RuntimeError(
+            f'DEFAULT_MODEL_FRONTEND="{default}" is not present in AVAILABLE_MODELS.'
+        )
+
+    return parsed
+
+
+# Parsed once at import time so a misconfigured value crashes the service at
+# boot rather than on the first request.
+AVAILABLE_MODELS: List[dict] = _parse_frontend_models(
+    settings.available_models_raw, settings.default_model_frontend
+)

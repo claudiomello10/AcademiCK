@@ -24,6 +24,13 @@ interface BookChapter {
     chapters: string[];
 }
 
+// A model available in the selector, fetched at runtime from /api/v1/models
+interface ModelOption {
+    provider: string;
+    value: string;
+    label: string;
+}
+
 interface BookMention {
     show: boolean;
     position: { top: number; left: number; } | null;
@@ -304,7 +311,11 @@ const StudentHelper = () => {
     // Live streaming state for the in-flight assistant turn.
     const [stages, setStages] = useState<Stage[]>([]);
     const [streamingText, setStreamingText] = useState('');
-    const [model, setModel] = useState('gpt-5-mini');
+    const [model, setModel] = useState<string>('');
+    // Models offered in the selector, fetched at runtime from the api-gateway.
+    // null = still loading; [] paired with modelsError = failed to load.
+    const [availableModels, setAvailableModels] = useState<ModelOption[] | null>(null);
+    const [modelsError, setModelsError] = useState<string | null>(null);
     const [subject, setSubject] = useState(process.env.NEXT_PUBLIC_DEFAULT_SUBJECT || 'Machine Learning');
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
@@ -321,6 +332,24 @@ const StudentHelper = () => {
     const [showConversations, setShowConversations] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
     const [conversationTitle, setConversationTitle] = useState<string>('Nova Conversa');
+
+    // Fetch the available models from the api-gateway on mount. The list is
+    // served at runtime, so updating it only needs a container restart.
+    useEffect(() => {
+        fetch(`${API_BASE_URL}${API_ENDPOINTS.models}`)
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.json();
+            })
+            .then((data: { available: ModelOption[]; default: string }) => {
+                setAvailableModels(data.available);
+                setModel(data.default);
+            })
+            .catch(() => {
+                setAvailableModels([]);
+                setModelsError('Falha ao carregar a lista de modelos.');
+            });
+    }, []);
 
     useEffect(() => {
         const savedSession = localStorage.getItem('session');
@@ -1236,7 +1265,7 @@ const StudentHelper = () => {
                                 <Button
                                     type="button"
                                     onClick={(e) => handleSubmit(e)}
-                                    disabled={isLoading || !query.trim()}
+                                    disabled={isLoading || !query.trim() || !model}
                                     className={`rounded-xl flex-1 h-[56px] w-full transition-all duration-200 ${query.trim()
                                         ? 'bg-primary text-primary-foreground hover:opacity-90'
                                         : 'bg-gray-300 text-gray-500 opacity-50 cursor-not-allowed'
@@ -1251,30 +1280,29 @@ const StudentHelper = () => {
                                 <select
                                     value={model}
                                     onChange={(e) => setModel(e.target.value)}
+                                    disabled={!availableModels || availableModels.length === 0}
                                     className="rounded-lg px-2 py-1 text-xs border border-gray-400 h-[26px] w-full bg-secondary"
                                 >
-                                    {/* OpenAI Models */}
-                                    <optgroup label="OpenAI">
-                                        <option value="gpt-4.1-nano">GPT-4.1 Nano</option>
-                                        <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
-                                        <option value="gpt-4.1">GPT-4.1</option>
-                                        <option value="gpt-5-nano">GPT-5 Nano</option>
-                                        <option value="gpt-5-mini">GPT-5 Mini</option>
-                                        <option value="gpt-5.1">GPT-5.1</option>
-                                    </optgroup>
-
-                                    {/* Claude Models */}
-                                    <optgroup label="Anthropic Claude">
-                                        <option value="claude-haiku-4-5">Claude 4.5 Haiku</option>
-                                        <option value="claude-sonnet-4-5">Claude 4.5 Sonnet</option>
-                                        <option value="claude-opus-4-5">Claude 4.5 Opus</option>
-                                    </optgroup>
-
-                                    {/* DeepSeek Models */}
-                                    <optgroup label="DeepSeek">
-                                        <option value="deepseek-coder">DeepSeek Coder</option>
-                                        <option value="deepseek-chat">DeepSeek Chat</option>
-                                    </optgroup>
+                                    {availableModels === null ? (
+                                        <option value="">Carregando modelos…</option>
+                                    ) : modelsError ? (
+                                        <option value="">{modelsError}</option>
+                                    ) : (
+                                        Array.from(
+                                            availableModels.reduce((groups, m) => {
+                                                const list = groups.get(m.provider) ?? [];
+                                                list.push(m);
+                                                groups.set(m.provider, list);
+                                                return groups;
+                                            }, new Map<string, ModelOption[]>())
+                                        ).map(([provider, options]) => (
+                                            <optgroup key={provider} label={provider}>
+                                                {options.map((opt) => (
+                                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                ))}
+                                            </optgroup>
+                                        ))
+                                    )}
                                 </select>
                             </div>
                         </form>

@@ -187,3 +187,20 @@ class SetSubjectRequest(BaseModel):
 class SubjectResponse(BaseModel):
     """Subject response."""
     subject: str
+
+
+# ===========================================
+# Models
+# ===========================================
+
+class ModelOption(BaseModel):
+    """A single model available in the frontend selector."""
+    provider: str
+    value: str
+    label: str
+
+
+class ModelsResponse(BaseModel):
+    """Available models and the default selection for the frontend."""
+    available: List[ModelOption]
+    default: str

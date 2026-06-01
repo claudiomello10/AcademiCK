@@ -87,6 +87,8 @@ const StudentHelper = () => {
     const [conversation, setConversation] = useState<ConversationMessage[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>('');
+    // Default model fetched at runtime from the api-gateway (no hardcoded value).
+    const [model, setModel] = useState<string>('');
 
     const subjects = [
         "Aprendizado de Máquina",
@@ -98,6 +100,11 @@ const StudentHelper = () => {
 
     useEffect(() => {
         createSession();
+        // Fetch the default model from the api-gateway (served at runtime).
+        fetch(`http://${API_BASE_URL}/api/v1/models`)
+            .then(response => response.json())
+            .then((data: { default: string }) => setModel(data.default))
+            .catch(() => {/* leave model empty; request validation handles it */ });
     }, []);
 
     // Auto-scroll para o final quando a conversa é atualizada
@@ -156,7 +163,7 @@ const StudentHelper = () => {
                 },
                 body: JSON.stringify({
                     query: userQuery,
-                    model: 'gpt-5-mini'
+                    model
                 })
             });
 

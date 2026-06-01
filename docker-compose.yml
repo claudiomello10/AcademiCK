@@ -143,6 +143,10 @@ services:
       - ENABLE_SNAPSHOT_MANAGEMENT=${ENABLE_SNAPSHOT_MANAGEMENT:-true}
       - ENABLE_PDF_UPLOAD=${ENABLE_PDF_UPLOAD:-true}
       - DOCS_ENABLED=${DOCS_ENABLED:-true}
+      # Frontend model selector (served at runtime via GET /api/v1/models;
+      # changing these only needs `docker compose restart api-gateway`)
+      - AVAILABLE_MODELS=${AVAILABLE_MODELS}
+      - DEFAULT_MODEL_FRONTEND=${DEFAULT_MODEL_FRONTEND}
       # RAG pipeline tuning (per-stage models, reasoning effort, search weights)
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-5-nano}
       - QUERY_ENHANCEMENT_MODEL=${QUERY_ENHANCEMENT_MODEL:-gpt-5-nano}
