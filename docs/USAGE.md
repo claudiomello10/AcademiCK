@@ -251,7 +251,8 @@ curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEFAULT_MODEL` | `gpt-5-mini` | Default LLM model for RAG responses |
+| `AVAILABLE_MODELS` | _(required)_ | JSON array of `{provider, value, label}` models offered in the frontend dropdown; served at runtime via `GET /api/v1/models` |
+| `DEFAULT_MODEL_FRONTEND` | _(required)_ | Initially-selected model; must match a `value` in `AVAILABLE_MODELS` |
 | `QUERY_ENHANCEMENT_MODEL` | `gpt-5-nano` | Model for generating focused search queries (runs on every query) |
 | `LLM_MAX_TOKENS` | `16384` | Maximum completion tokens (increase for reasoning models) |
 | `TOP_K_SEARCHING` | `10` | Retrieval chunks for `searching_for_information` intent |

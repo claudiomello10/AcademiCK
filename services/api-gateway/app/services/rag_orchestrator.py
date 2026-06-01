@@ -252,7 +252,7 @@ class RAGOrchestrator:
             subject=subject,
             context_chunks=curated_chunks,
         )
-        model_name = model or settings.default_model
+        model_name = model or settings.default_model_frontend
         answer_agent = Agent(
             model=build_model(model_name, settings.rag_reasoning),
             output_type=str,

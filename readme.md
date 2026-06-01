@@ -167,7 +167,8 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | `ANTHROPIC_API_KEY`         | At least one | Anthropic API key                                      |
 | `DEEPSEEK_API_KEY`          | At least one | DeepSeek API key                                       |
 | `DEFAULT_SUBJECT`           | No           | Academic subject (default: Machine Learning)           |
-| `DEFAULT_MODEL`             | No           | Default LLM model (default: gpt-5-mini)                |
+| `AVAILABLE_MODELS`          | Yes          | JSON array of models offered in the frontend dropdown  |
+| `DEFAULT_MODEL_FRONTEND`    | Yes          | Initially-selected model (a `value` in `AVAILABLE_MODELS`) |
 | `AGENT_ENABLED`             | No           | Enable curation agent (default: true)                  |
 | `REASONING_TRACE_VISIBLE`   | No           | Expose the agent's reasoning trace in the chat UI (default: false) |
 | `EMBEDDING_DEVICE`          | No           | Embedding device:`gpu` or `cpu` (default: gpu)     |
@@ -196,6 +197,8 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | Document                     | Description                                                    |
 | ---------------------------- | -------------------------------------------------------------- |
 | [Usage Guide](docs/USAGE.md)    | API examples, admin dashboard, PDF processing, troubleshooting |
+| [Database Schema](docs/database.md) | PostgreSQL tables, relationships, and analytics            |
+| [Vector Store](docs/qdrant.md)  | Qdrant collection, vectors, payload, and retrieval             |
 | [Security Policy](SECURITY.md)  | Vulnerability reporting and deployment best practices          |
 | [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process                      |
 | [.env.example](.env.example)    | All configuration options with descriptions                    |

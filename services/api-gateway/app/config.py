@@ -64,13 +64,7 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
     deepseek_api_key: Optional[str] = os.getenv("DEEPSEEK_API_KEY")
 
-    # Default LLM model (server-side request fallback used when a request
-    # omits the `model` field — distinct from the frontend selector below)
-    default_model: str = os.getenv("DEFAULT_MODEL", "gpt-5-mini")
-
-    # Models exposed in the frontend selector. Served at runtime via
-    # GET /api/v1/models, so changing these only requires a container
-    # restart (no frontend rebuild). Parsed/validated at startup below.
+    # Frontend model selector, served at runtime via GET /api/v1/models.
     available_models_raw: str = _require_env("AVAILABLE_MODELS")
     default_model_frontend: str = _require_env("DEFAULT_MODEL_FRONTEND")
 

@@ -1,10 +1,4 @@
-"""Model selector endpoints.
-
-Exposes the LLM models the frontend should offer in its selector. The list is
-read from the api-gateway environment (AVAILABLE_MODELS / DEFAULT_MODEL_FRONTEND)
-and parsed once at startup, so updating the available models only requires a
-container restart — no frontend rebuild.
-"""
+"""Model selector endpoint."""
 
 from fastapi import APIRouter
 
