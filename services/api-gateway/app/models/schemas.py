@@ -48,7 +48,6 @@ class ChatRequest(BaseModel):
     """Chat request."""
     query: str = Field(..., min_length=1, max_length=10000)
     model: Optional[str] = None
-    book_filter: Optional[str] = None
 
 
 class SourceChunk(BaseModel):

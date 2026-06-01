@@ -172,7 +172,6 @@ class RAGOrchestrator:
         subject: str = settings.default_subject,
         conversation_history: Optional[List[Dict]] = None,
         model: Optional[str] = None,
-        book_filter: Optional[str] = None,
         progress: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
         """Process a user query through the RAG pipeline.
@@ -330,8 +329,7 @@ class RAGOrchestrator:
         self,
         query: str,
         subject: str = settings.default_subject,
-        model: Optional[str] = None,
-        book_filter: Optional[str] = None
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a single query without conversation history.
@@ -342,6 +340,5 @@ class RAGOrchestrator:
             query=query,
             subject=subject,
             conversation_history=None,
-            model=model,
-            book_filter=book_filter
+            model=model
         )

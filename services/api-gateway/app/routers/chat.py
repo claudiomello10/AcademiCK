@@ -174,7 +174,6 @@ async def chat(
                     subject=session.get("subject", settings.default_subject),
                     conversation_history=messages,
                     model=chat_request.model,
-                    book_filter=chat_request.book_filter,
                     progress=progress,
                 )
 
@@ -269,8 +268,7 @@ async def chat_single(
     result = await orchestrator.process_single_query(
         query=chat_request.query,
         subject=session.get("subject", settings.default_subject),
-        model=chat_request.model,
-        book_filter=chat_request.book_filter
+        model=chat_request.model
     )
 
     # Track usage stats
