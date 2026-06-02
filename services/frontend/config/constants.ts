@@ -22,6 +22,9 @@ export const API_ENDPOINTS = {
     newConversation: (sessionId: string) => `/api/v1/conversations/${sessionId}/new`,
     updateConversationTitle: (sessionId: string) => `/api/v1/conversations/${sessionId}/current/title`,
 
+    // Models
+    models: "/api/v1/models",
+
     // Books
     books: "/api/v1/books",
     bookDetails: (bookId: string) => `/api/v1/books/${bookId}`,

@@ -9,7 +9,6 @@ Detailed documentation for using, configuring, and troubleshooting AcademiCK.
 - [Processing New PDFs](#processing-new-pdfs)
 - [Admin Dashboard](#admin-dashboard)
 - [Backup and Restore](#backup-and-restore)
-- [Data Migration](#data-migration)
 - [Environment Variables](#environment-variables)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
@@ -57,8 +56,24 @@ Response:
 
 ### Send a Query
 
+The main chat endpoint streams its response as Server-Sent Events. The
+stream emits `status` events for each pipeline stage (intent, enhancing,
+searching, curating, generating), `token` events for incremental
+answer deltas, a final `done` event with the full payload, and `error`
+on failure (no messages are persisted in that case).
+
 ```bash
-curl -X POST http://localhost/api/v1/chat/{session_id} \
+curl -N -X POST http://localhost/api/v1/chat/{session_id} \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"query": "What is gradient descent?"}'
+```
+
+For one-shot JSON without conversation history (no streaming), use the
+`/single` endpoint which still returns a single `ChatResponse`:
+
+```bash
+curl -X POST http://localhost/api/v1/chat/{session_id}/single \
   -H "Content-Type: application/json" \
   -d '{"query": "What is gradient descent?"}'
 ```
@@ -173,54 +188,35 @@ Access at http://localhost/admin with admin credentials.
 
 ## Backup and Restore
 
-### Create Qdrant Snapshot
+Snapshots are managed through the admin dashboard or the API. Each snapshot includes the Qdrant vector data and a metadata JSON file with book/chapter information.
+
+### Via Admin Dashboard
+
+1. Go to "Content Management" tab
+2. Use the snapshot management buttons to create, restore, download, upload, or delete snapshots
+
+### Via API
 
 ```bash
-python scripts/export_qdrant_snapshot.py \
-  --action create \
-  --output-dir ./data/qdrant_snapshots/
-```
+# Create snapshot
+curl -X POST "http://localhost/api/v1/admin/snapshots/create?session_id={admin_session}"
 
-### Restore from Snapshot
+# List snapshots
+curl "http://localhost/api/v1/admin/snapshots?session_id={admin_session}"
 
-```bash
-python scripts/export_qdrant_snapshot.py \
-  --action restore \
-  --snapshot-path ./data/qdrant_snapshots/your-snapshot.snapshot
-```
+# Restore snapshot
+curl -X POST "http://localhost/api/v1/admin/snapshots/{snapshot_name}/restore?session_id={admin_session}"
 
----
+# Download snapshot file
+curl -O "http://localhost/api/v1/admin/snapshots/{snapshot_name}/download?session_id={admin_session}"
 
-## Data Migration
+# Upload external snapshot with metadata
+curl -X POST "http://localhost/api/v1/admin/snapshots/upload?session_id={admin_session}" \
+  -F "snapshot_file=@your-snapshot.snapshot" \
+  -F "metadata_file=@your-snapshot.metadata.json"
 
-If you have existing embeddings in SQLite format:
-
-```bash
-# Install migration dependencies
-pip install asyncpg httpx qdrant-client tqdm
-
-# Run migration (without sparse embeddings - faster)
-python scripts/migrate_embeddings.py \
-    --sqlite-path data/embeddings/embeddings.db \
-    --no-regenerate-sparse \
-    --validate \
-    --create-snapshot
-```
-
-To generate sparse embeddings for hybrid search (requires embedding service):
-
-```bash
-# First start embedding service
-docker compose up -d embedding-service
-
-# Wait for model to load (~2-5 minutes)
-docker logs -f academick-embedding
-
-# Run migration with sparse embedding generation
-python scripts/migrate_embeddings.py \
-    --sqlite-path data/embeddings/embeddings.db \
-    --validate \
-    --create-snapshot
+# Delete snapshot
+curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_id={admin_session}"
 ```
 
 ---
@@ -255,7 +251,8 @@ python scripts/migrate_embeddings.py \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEFAULT_MODEL` | `gpt-5-mini` | Default LLM model for RAG responses |
+| `AVAILABLE_MODELS` | _(required)_ | JSON array of `{provider, value, label}` models offered in the frontend dropdown; served at runtime via `GET /api/v1/models` |
+| `DEFAULT_MODEL_FRONTEND` | _(required)_ | Initially-selected model; must match a `value` in `AVAILABLE_MODELS` |
 | `QUERY_ENHANCEMENT_MODEL` | `gpt-5-nano` | Model for generating focused search queries (runs on every query) |
 | `LLM_MAX_TOKENS` | `16384` | Maximum completion tokens (increase for reasoning models) |
 | `TOP_K_SEARCHING` | `10` | Retrieval chunks for `searching_for_information` intent |
@@ -264,6 +261,22 @@ python scripts/migrate_embeddings.py \
 | `SEARCH_WEIGHT_SUMMARIZATION_DENSE` | `0.7` | Dense weight for summarization queries |
 | `SEARCH_WEIGHT_CODING_DENSE` | `0.4` | Dense weight for coding queries |
 | `SEARCH_WEIGHT_SEARCHING_DENSE` | `0.5` | Dense weight for search queries |
+| `QUERY_ENHANCEMENT_REASONING` | `none` | Reasoning effort for query enhancement (`none`, `low`, `medium`, `high`) |
+| `RAG_REASONING` | `none` | Reasoning effort for main answer generation |
+| `AGENT_CURATION_REASONING` | `low` | Reasoning effort for curation agent |
+
+### Agentic RAG
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_ENABLED` | `true` | Enable the curation agent (disable for single-pass RAG) |
+| `AGENT_MAX_ITERATIONS` | `3` | Maximum curation iterations before forcing approval |
+| `AGENT_CURATION_MODEL` | `gpt-5-nano` | Model for curation evaluation (should be fast and cheap) |
+| `AGENT_CURATION_REASONING` | `none` | Reasoning effort for the curation agent (`none`, `low`, `medium`, `high`) |
+| `AGENT_CURATION_TIMEOUT` | `60` | Per-iteration timeout (seconds) for the curation model call; on timeout the request fails (SSE `error` event / HTTP 504 on `/single`) |
+| `AGENT_CURATION_MAX_TOKENS` | `4096` | Max response tokens for the curation model (also scales the Anthropic thinking budget) |
+| `AGENT_MAX_CONTEXT_CHUNKS` | `18` | Maximum chunks in the agent's context pool |
+| `REASONING_TRACE_VISIBLE` | `false` | Expose the agent's reasoning trace in the chat UI as an expandable "ver raciocínio" toggle |
 
 ### Database & Storage
 

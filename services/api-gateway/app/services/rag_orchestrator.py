@@ -2,21 +2,102 @@
 
 import asyncio
 import time
-import re
-from difflib import SequenceMatcher
-from typing import Dict, List, Optional, Any
+from typing import Awaitable, Callable, Dict, List, Optional, Any
 import logging
+
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from app.clients.intent_client import IntentClient
 from app.clients.embedding_client import EmbeddingClient
 from app.clients.qdrant_client import QdrantManager
 from app.services.search_service import SearchService
-from app.services.llm_service import LLMService
-from app.services.prompt_engineering import get_rag_system_prompt, get_enhanced_query_prompt
+from app.services.agent_models import build_model
+from app.services.prompt_engineering import (
+    get_rag_system_prompt,
+    get_enhancement_system_prompt,
+)
+from app.services.reasoning_agent import CurationAgent
+from app.utils.matching import match_book_name
 from redis import asyncio as aioredis
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class RetrievalQuery(BaseModel):
+    """A single search query generated for retrieval."""
+
+    query: str = Field(description="Declarative textbook-style search query.")
+    book: Optional[str] = Field(
+        default=None,
+        description="Exact book name to target, or null to search all books.",
+    )
+
+
+class EnhancedQueries(BaseModel):
+    """Structured output of the query enhancement agent."""
+
+    resolved_query: str = Field(
+        description=(
+            "Student's question with all pronouns and references resolved "
+            "using conversation history. Minimal rewrite — no elaboration."
+        )
+    )
+    retrievals: List[RetrievalQuery] = Field(
+        default_factory=list,
+        description="Up to 3 focused search queries to issue.",
+    )
+
+
+def _to_pydantic_ai_history(
+    messages: Optional[List[Dict]], limit: int = 6
+) -> List[ModelMessage]:
+    """Convert our list-of-dicts conversation history to Pydantic AI messages."""
+    if not messages:
+        return []
+    history: List[ModelMessage] = []
+    for msg in messages[-limit:]:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "assistant":
+            history.append(ModelResponse(parts=[TextPart(content=content)]))
+        else:
+            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+    return history
+
+
+# Progress callback type: producers in the pipeline emit small dict events.
+# The SSE endpoint provides a queue-feeding callback; non-streaming callers
+# pass None and get a no-op.
+ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
+
+
+async def _noop_progress(_: Dict[str, Any]) -> None:
+    pass
+
+
+# Portuguese labels emitted with each stage. The UI just renders these
+# verbatim — backend can tweak copy without a frontend ship.
+STAGE_LABELS = {
+    "intent": "Entendendo pergunta...",
+    "enhancing": "Gerando consultas de busca...",
+    "searching": "Buscando nos livros...",
+    "generating": "Gerando resposta...",
+}
+
+NO_CONTEXT_MESSAGE = (
+    "Não encontrei informações relevantes nos livros disponíveis para "
+    "responder a sua pergunta. Tente reformular a pergunta ou perguntar "
+    "sobre outro tópico."
+)
 
 
 class RAGOrchestrator:
@@ -36,124 +117,60 @@ class RAGOrchestrator:
             embedding_client=embedding_client,
             redis=redis
         )
-        self.llm_service = LLMService()
-
-    def _match_book_name(
-        self,
-        book_name: str,
-        available_books: List[str],
-        threshold: float = 0.6
-    ) -> Optional[str]:
-        """
-        Match an LLM-produced book name to the closest available book
-        using character-level similarity.
-
-        Args:
-            book_name: The book name produced by the LLM
-            available_books: List of actual book names in Qdrant
-            threshold: Minimum similarity ratio (0-1) to accept a match
-
-        Returns:
-            The best matching book name, or None if no match above threshold
-        """
-        if not book_name or not available_books:
-            return None
-
-        # Exact match first
-        if book_name in available_books:
-            return book_name
-
-        # Character-level similarity matching
-        book_lower = book_name.lower()
-        best_match = None
-        best_ratio = 0.0
-
-        for book in available_books:
-            ratio = SequenceMatcher(None, book_lower, book.lower()).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_match = book
-
-        if best_ratio >= threshold:
-            logger.info(
-                f"Fuzzy matched book '{book_name}' -> '{best_match}' "
-                f"(similarity: {best_ratio:.2f})"
-            )
-            return best_match
-
-        logger.warning(
-            f"No book match found for '{book_name}' "
-            f"(best candidate: '{best_match}', similarity: {best_ratio:.2f})"
-        )
-        return None
 
     async def _generate_enhanced_queries(
         self,
         query: str,
         subject: str,
         conversation_history: Optional[List[Dict]] = None
-    ) -> List[Dict[str, Optional[str]]]:
-        """
-        Generate multiple focused search queries from the user query.
-        Uses a fast model (GPT-5 Nano) for query enhancement.
+    ) -> Dict[str, Any]:
+        """Generate focused search queries from the user query via a typed agent.
 
-        Returns:
-            List of {"query": str, "book": Optional[str]}
+        Returns dict with "retrievals" (list of {"query", "book"}) and
+        "resolved_query" (string with references resolved from history).
         """
         try:
-            # Get available books
             available_books = await self.qdrant.get_books()
 
-            # Generate enhancement prompt
-            prompt = get_enhanced_query_prompt(
-                query=query,
-                subject=subject,
-                available_books=available_books,
-                conversation_history=conversation_history
+            agent = Agent(
+                model=build_model(
+                    settings.query_enhancement_model,
+                    settings.query_enhancement_reasoning,
+                ),
+                output_type=EnhancedQueries,
+                system_prompt=get_enhancement_system_prompt(subject, available_books),
             )
 
-            # Call LLM for query enhancement
-            messages = [{"role": "user", "content": prompt}]
-            llm_result = await self.llm_service.generate(
-                messages=messages,
-                model=settings.query_enhancement_model,
-                temperature=0.3  # Lower temperature for more focused queries
+            result = await agent.run(
+                query,
+                message_history=_to_pydantic_ai_history(conversation_history),
             )
-            response = llm_result["text"] or ""
+            output: EnhancedQueries = result.output
 
-            logger.debug(f"Query enhancement response: {response}")
+            retrievals = [
+                {
+                    "query": r.query,
+                    "book": match_book_name(r.book, available_books) if r.book else None,
+                }
+                for r in output.retrievals
+            ]
 
-            # Parse the XML-like response
-            retrievals = []
-            for i in range(1, 4):
-                pattern = f'<retrieval{i} book="([^"]+)">(.*?)</retrieval{i}>'
-                match = re.search(pattern, response, re.DOTALL)
-                if match:
-                    book = match.group(1).strip()
-                    retrieval_query = match.group(2).strip()
-
-                    # Convert "all" to None for no book filter
-                    if book.lower() == "all":
-                        book = None
-
-                    retrievals.append({
-                        "query": retrieval_query,
-                        "book": book
-                    })
-
-            # Validate book names against available books using fuzzy matching
-            for retrieval in retrievals:
-                if retrieval["book"] is not None:
-                    retrieval["book"] = self._match_book_name(
-                        retrieval["book"], available_books
-                    )
-
-            logger.info(f"Generated {len(retrievals)} enhanced queries: {retrievals}")
-            return retrievals if retrievals else [{"query": query, "book": None}]
+            logger.info(
+                f"Generated {len(retrievals)} enhanced queries:\n"
+                f"Resolved query: '{output.resolved_query}'\n"
+                f"Retrievals: {retrievals}"
+            )
+            return {
+                "retrievals": retrievals or [{"query": query, "book": None}],
+                "resolved_query": output.resolved_query or query,
+            }
 
         except Exception as e:
             logger.warning(f"Query enhancement failed, using original query: {e}")
-            return [{"query": query, "book": None}]
+            return {
+                "retrievals": [{"query": query, "book": None}],
+                "resolved_query": query,
+            }
 
     async def process_query(
         self,
@@ -161,107 +178,148 @@ class RAGOrchestrator:
         subject: str = settings.default_subject,
         conversation_history: Optional[List[Dict]] = None,
         model: Optional[str] = None,
-        book_filter: Optional[str] = None
+        progress: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
-        """
-        Process a user query through the RAG pipeline.
+        """Process a user query through the RAG pipeline.
 
-        Args:
-            query: User's question
-            subject: Study subject
-            conversation_history: Previous messages for context
-            model: LLM model to use
-            book_filter: Optional book to filter search
-
-        Returns:
-            Dict containing response, intent, sources, and metadata
+        If `progress` is provided, the orchestrator awaits it at each
+        pipeline boundary with small dict events of the form
+        `{"type": "status"|"token", ...}`. Non-streaming callers pass None
+        and the callback is a no-op — behavior is otherwise identical.
         """
+        emit = progress or _noop_progress
         start_time = time.time()
 
-        # Step 1: Classify intent
-        intent_task = asyncio.create_task(
-            self.intent_client.classify(query)
-        )
+        # Step 1+2: intent and query enhancement run concurrently.
+        await emit({"type": "status", "stage": "intent", "label": STAGE_LABELS["intent"]})
+        intent_task = asyncio.create_task(self.intent_client.classify(query))
 
-        # Step 2: Generate enhanced queries (concurrent with intent)
+        await emit({"type": "status", "stage": "enhancing", "label": STAGE_LABELS["enhancing"]})
         enhanced_queries_task = asyncio.create_task(
             self._generate_enhanced_queries(query, subject, conversation_history)
         )
 
-        # Wait for intent classification
         intent_result = await intent_task
         intent = intent_result.get("intent", "question_answering")
+        top_k = (
+            settings.top_k_searching
+            if intent == "searching_for_information"
+            else settings.top_k_default
+        )
 
-        # Adjust top_k based on intent
-        top_k = settings.top_k_searching if intent == "searching_for_information" else settings.top_k_default
+        enhancement_result = await enhanced_queries_task
+        enhanced_queries = enhancement_result["retrievals"]
+        resolved_query = enhancement_result["resolved_query"]
 
-        # Wait for enhanced queries
-        enhanced_queries = await enhanced_queries_task
-
-        # Step 3: Search with enhanced queries
+        # Step 3: initial search.
+        await emit({
+            "type": "status",
+            "stage": "searching",
+            "label": STAGE_LABELS["searching"],
+            "queries": len(enhanced_queries),
+        })
         search_results = await self.search_service.search_with_enhanced_queries(
             queries=enhanced_queries,
             intent=intent,
-            top_k=top_k
+            top_k=top_k,
         )
 
-        # Step 4: Build prompt with context
-        system_prompt = get_rag_system_prompt(
-            intent=intent,
-            subject=subject,
-            context_chunks=search_results
-        )
-
-        # Build messages
-        messages = [{"role": "system", "content": system_prompt}]
-
-        # Add conversation history (last few messages for context)
-        if conversation_history:
-            for msg in conversation_history[-6:]:  # Last 6 messages
-                if msg.get("role") in ["user", "assistant"]:
-                    messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
-
-        # Add current query
-        messages.append({"role": "user", "content": query})
-
-        # Step 5: Generate response
-        tokens_used = None
-        try:
-            llm_result = await self.llm_service.generate(
-                messages=messages,
-                model=model,
-                temperature=0.7
+        # Step 4: agentic context curation (if enabled). The agent forwards
+        # its own per-iteration status events through the same callback.
+        agent_result = None
+        if settings.agent_enabled and search_results:
+            agent = CurationAgent(
+                search_service=self.search_service,
+                qdrant=self.qdrant,
             )
-            response = llm_result["text"]
-            tokens_used = llm_result.get("total_tokens")
+            agent_result = await agent.run(
+                query=resolved_query,
+                intent=intent,
+                subject=subject,
+                initial_chunks=search_results,
+                top_k=top_k,
+                progress=emit,
+            )
+            curated_chunks = agent_result.final_chunks
+        else:
+            curated_chunks = search_results
 
-            # Retry once if response is empty
-            if not response:
-                logger.warning(
-                    f"Empty LLM response on first attempt, retrying: "
-                    f"model={model}, intent={intent}"
-                )
-                llm_result = await self.llm_service.generate(
-                    messages=messages,
-                    model=model,
-                    temperature=0.7
-                )
-                response = llm_result["text"]
-                tokens_used = llm_result.get("total_tokens")
+        # Step 5: stream the final answer. Tokens are emitted live so the
+        # UI can render the response as it's generated.
+        await emit({
+            "type": "status",
+            "stage": "generating",
+            "label": STAGE_LABELS["generating"],
+        })
 
-            # Fallback if still empty after retry
-            if not response:
-                logger.error(
-                    f"Empty LLM response after retry: "
-                    f"model={model}, intent={intent}"
+        model_name = model or settings.default_model_frontend
+        response: str = ""
+        tokens_used: Optional[int] = None
+
+        if not curated_chunks:
+            # No grounding context survived retrieval/curation — serve the fixed
+            # "not found" message instead of letting the model answer blind.
+            logger.info("No context after retrieval/curation — serving not-found message")
+            response = NO_CONTEXT_MESSAGE
+            await emit({"type": "token", "text": response})
+        else:
+            system_prompt = get_rag_system_prompt(
+                intent=intent,
+                subject=subject,
+                context_chunks=curated_chunks,
+            )
+            answer_agent = Agent(
+                model=build_model(model_name, settings.rag_reasoning),
+                output_type=str,
+                system_prompt=system_prompt,
+            )
+            history = _to_pydantic_ai_history(conversation_history)
+
+            logger.info(
+                f"Generating answer (model={model_name}, "
+                f"context={len(curated_chunks)} chunks)"
+            )
+            answer_start = time.time()
+            try:
+                parts: List[str] = []
+                async with answer_agent.run_stream(
+                    query, message_history=history
+                ) as run:
+                    async for delta in run.stream_text(delta=True):
+                        parts.append(delta)
+                        await emit({"type": "token", "text": delta})
+                    usage = run.usage
+                    tokens_used = usage.total_tokens if usage else None
+                response = "".join(parts)
+                logger.info(
+                    f"Answer generated in {(time.time() - answer_start) * 1000:.0f}ms "
+                    f"({tokens_used} tokens)"
                 )
-                response = "Desculpe, não consegui gerar uma resposta. Por favor, tente novamente."
-        except Exception as e:
-            logger.error(f"LLM generation failed: {e}")
-            response = "I apologize, but I encountered an error generating a response. Please try again."
+
+                # If the stream produced nothing, retry once non-streaming.
+                if not response:
+                    logger.warning(
+                        f"Empty streamed response, retrying non-streaming: "
+                        f"model={model_name}, intent={intent}"
+                    )
+                    result = await answer_agent.run(query, message_history=history)
+                    response = result.output or ""
+                    usage = result.usage
+                    tokens_used = usage.total_tokens if usage else None
+                    if response:
+                        await emit({"type": "token", "text": response})
+
+                if not response:
+                    logger.error(
+                        f"Empty LLM response after retry: "
+                        f"model={model_name}, intent={intent}"
+                    )
+                    response = "I apologize, but I was unable to generate a response. Please try again."
+                    await emit({"type": "token", "text": response})
+            except Exception as e:
+                logger.error(f"LLM generation failed: {e}")
+                response = "I apologize, but I encountered an error generating a response. Please try again."
+                await emit({"type": "token", "text": response})
 
         processing_time = (time.time() - start_time) * 1000
 
@@ -277,20 +335,24 @@ class RAGOrchestrator:
                     "topic": chunk.get("topic"),
                     "score": chunk["score"]
                 }
-                for chunk in search_results
+                for chunk in curated_chunks
             ],
             # Full search results with IDs for chunk retrieval tracking (analytics)
             "search_results": search_results,
-            "model_used": model or "gpt-5-nano",
-            "processing_time_ms": processing_time
+            "model_used": model_name,
+            "processing_time_ms": processing_time,
+            "agent_iterations": agent_result.iterations_used if agent_result else 0,
+            "agent_tokens": agent_result.total_agent_tokens if agent_result else 0,
+            "agent_searches": agent_result.total_agent_searches if agent_result else 0,
+            "agent_time_ms": agent_result.agent_time_ms if agent_result else 0,
+            "reasoning_trace": agent_result.reasoning_trace if agent_result else [],
         }
 
     async def process_single_query(
         self,
         query: str,
         subject: str = settings.default_subject,
-        model: Optional[str] = None,
-        book_filter: Optional[str] = None
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a single query without conversation history.
@@ -301,6 +363,5 @@ class RAGOrchestrator:
             query=query,
             subject=subject,
             conversation_history=None,
-            model=model,
-            book_filter=book_filter
+            model=model
         )

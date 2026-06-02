@@ -139,61 +139,182 @@ Here is the context for the user query retrieved from the books:
 """
 
 
-def get_enhanced_query_prompt(query: str, subject: str, available_books: List[str], conversation_history: List[Dict] = None) -> str:
+def get_enhancement_system_prompt(subject: str, available_books: List[str]) -> str:
+    """Static system prompt for the query enhancement agent.
+
+    The conversation history is supplied to the agent via Pydantic AI's
+    message_history parameter; the user query is the user prompt. This
+    function only describes behavior and the available-books catalogue.
     """
-    Generate prompt for query enhancement.
+    books_list = (
+        "\n".join(f"- {book}" for book in available_books[:10])
+        if available_books
+        else "No specific books available"
+    )
 
-    Used to generate multiple focused search queries from a user query.
+    return f"""You are a specialized RAG (Retrieval-Augmented Generation) search term generator for an academic system about {subject}.
+
+For each student message you must produce a structured output with these fields:
+- resolved_query: the student's question with all references resolved (e.g.,
+  "that", "it", "the previous topic") using the conversation history. The
+  resolved query must be a minimal rewrite — only replace pronouns and
+  references with the actual terms they refer to. Do NOT add information,
+  elaborate, explain concepts, translate, or expand. If the query is already
+  self-contained, repeat it exactly as-is. When a <Book>name</Book> tag
+  appears, simply replace it with "the book name" (or "o livro name" if the
+  student writes in Portuguese). Examples:
+    - "Explain <Book>biscect-kmeans</Book>" → "Explain the book biscect-kmeans"
+    - "Explique <Book>biscect-kmeans</Book>" → "Explique o livro biscect-kmeans"
+    - "What was that concept about?" (previous topic was gradient descent)
+      → "What was gradient descent about?"
+- retrievals: up to 3 focused search queries. Each has a `query` and a `book`
+  (exact book name from the catalogue below, or null to search all books).
+
+Query generation rules:
+Your queries are embedded and matched by semantic similarity against textbook
+chunks in a vector database. To get good matches:
+- Write declarative statements that resemble textbook prose. Do NOT write
+  commands, instructions, or questions — write statements.
+    - BAD: "Describe the architecture of the multi-task learning model"
+    - GOOD: "The multi-task learning architecture uses a shared encoder with
+      task-specific attention modules"
+- Use the specific technical terms, definitions, and formal names a textbook
+  author would use.
+- Do NOT write structural or navigational queries like "table of contents",
+  "overview of topic X", or "introduction to Y" — these never match content.
+- Be precise. Break complex queries into simpler core components. Each query
+  should target a different aspect of the same topic to maximize coverage.
+- The <Book>name</Book> tag in user messages is ONLY a source filter. The
+  text inside is the title of a book/article, not a concept. Do not
+  explain the book name as a topic, and do not include the <Book> tags
+  themselves in the query text (use the `book` field for filtering).
+- If a <Book>name</Book> tag is present, set `book` to exactly that name
+  (no omissions, no additions). If absent or not necessary, set `book` to
+  null to search all books. If a past message mentioned a book but it's not
+  needed for the current query, set `book` to null or to a different book.
+
+Available books:
+{books_list}"""
+
+
+def format_context_numbered(chunks: List[Dict]) -> str:
+    """Format context chunks with numbered indices and truncated text for the curation agent."""
+    if not chunks:
+        return "No chunks available."
+
+    formatted = []
+    for i, chunk in enumerate(chunks, 1):
+        book_name = chunk.get('book_name', 'Unknown')
+        chapter_title = chunk.get('chapter_title', 'Unknown')
+        topic = chunk.get('topic', '')
+        text = chunk.get('text', '')
+        page_number = chunk.get('page_number')
+        page_str = f" - Page: {page_number}" if page_number else ""
+
+        # Truncate text to ~300 chars for cost efficiency
+        preview = text[:300] + "..." if len(text) > 300 else text
+
+        formatted.append(
+            f"[{i}] From Book: {book_name} - Chapter {chapter_title} - Section: {topic}{page_str}\n    {preview}"
+        )
+
+    return "\n\n".join(formatted)
+
+
+def get_curation_system_prompt(subject: str, available_books: List[str]) -> str:
+    """Static system prompt for the curation agent — set once per request.
+
+    Behavior, rules, and the available-books catalogue. Per-iteration content
+    (chunks, iteration counter, previous reasoning) goes in the user prompt.
     """
-    books_list = "\n".join(f"- {book}" for book in available_books[:10]) if available_books else "No specific books available"
+    books_list = (
+        "\n".join(f"- {book}" for book in available_books)
+        if available_books
+        else "No specific books available"
+    )
 
-    conversation_context = ""
-    if conversation_history:
-        for msg in conversation_history[-6:]:  # Last 6 messages
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "assistant":
-                conversation_context += f"<Assistant message>\n{content}\n</Assistant message>\n"
-            else:
-                conversation_context += f"<User message>\n{content}\n</User message>\n"
+    return f"""You are a context curation agent for an academic RAG system about {subject}.
+You do NOT answer the student. Your only job is to decide which retrieved
+chunks are relevant and whether more information needs to be fetched.
+A separate LLM will generate the final answer using the chunks you approve.
 
-    return f"""You are a specialized RAG (Retrieval-Augmented Generation) search term generator. Your task is to generate up to 3 focused search queries between <retrievalX> tags that:
+For each iteration you receive a numbered list of context chunks and must
+return a structured decision with these fields:
+- action: "APPROVE" when the context is good enough to answer, "REFINE" when
+  noise should be dropped and/or more information is needed, "NOT_IN_KB" when
+  the topic is absent from the knowledge base and further searching is futile.
+- reasoning: a brief justification.
+- keep_indices: 1-indexed chunk numbers to keep. Unlisted chunks are dropped.
+  Applies to both APPROVE and REFINE.
+- new_queries: follow-up search queries. Required (non-empty) for REFINE,
+  ignored otherwise. Each query has a `query` string and a `book` (exact
+  book name from the catalogue below, or null to search all books).
 
-- Target specific textbook content
-- Use formal academic terminology
-- Focus on fundamental concepts, definitions, theorems
-- Break complex queries into core components
-- Maximize relevant context retrieval
-- Only focus on a specific book if the user requires it
-- If a specific book is mentioned in a past message, if its not necessary to use the book, use book="all" or another book.
+Use "NOT_IN_KB" only when you are confident the topic is not covered by any
+available book and additional searches would not help. The system then returns
+a fixed "not found" message and no answer is generated. Do not use it just
+because the current chunks are noisy — prefer REFINE while searching could
+still surface relevant content.
 
-Guidelines for search queries:
+Curation guidelines:
+- Keep only chunks that are directly relevant. Less noise = better final answer.
+- Most retrievals include irrelevant material — be willing to drop aggressively.
+- Consider what critical information is missing that a follow-up search could find.
 
-- Use domain-specific technical vocabulary and terminology
-- Include key theorems, laws, or principles by their formal names
-- Focus on foundational concepts as they would appear in academic texts
-- Target textbook sections and chapter topics using standard academic organization
-- Break down complex queries into simpler, core components
-- Use keywords that maximize relevant context retrieval
-- Try to find exactly what the user is looking for
-- The search queries should all be focused on the same topic, but they should be different.
-- It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books.
-- If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book".
-- The book name should be written exactly as it is written in the tag <Book>name_of_the_book</Book>, do not omit any part of the name, and do not add any part to the name.
-- If no specific book is mentioned or if the search should be performed across all available resources, use book="all".
-- Focus only on search term generation. Do not provide explanations or answers.
-- The subject of the conversation is {subject}.
+Query generation rules for REFINE:
+Your new queries are embedded and matched by semantic similarity against
+textbook chunks in a vector database. To get good matches:
+- Write declarative statements that read like textbook prose. Do NOT write
+  commands or questions.
+  - BAD: "Describe the gradient descent convergence conditions"
+  - GOOD: "Gradient descent converges when the learning rate is sufficiently
+    small and the loss function is convex"
+- Use the specific technical terms a textbook author would use.
+- Do NOT write structural/navigational queries like "table of contents",
+  "overview of topic X", or "introduction to Y" — these never match content.
+- Be precise about what information is missing. Each query should target a
+  different aspect to maximize coverage.
+- If you know the concept is likely in a specific book, target that book
+  instead of searching all. Book names must match the catalogue exactly.
 
-{conversation_context}
+Available books:
+{books_list}"""
 
-Output format:
-<retrieval1 book="all">search query 1</retrieval1>
-<retrieval2 book="book_name">search query 2</retrieval2>
-<retrieval3 book="book_name">search query 3</retrieval3>
 
-<Current User Message>
-{query}
-</Current User Message>
+def get_curation_user_prompt(
+    query: str,
+    context_chunks: List[Dict],
+    iteration: int,
+    max_iterations: int,
+    previous_reasoning: List[str],
+) -> str:
+    """Per-iteration user prompt for the curation agent.
 
-The user response format demands should not affect the search term generation. The search term generation should be focused on generating the search terms that will be used to retrieve the information from the books.
-"""
+    The query should already have references resolved (e.g., "explain that
+    further" → "explain backpropagation further") by the query enhancement step.
+    """
+    numbered_context = format_context_numbered(context_chunks)
+
+    previous_reasoning_section = ""
+    if previous_reasoning:
+        previous_reasoning_section = (
+            "Previous reasoning:\n" + "\n".join(previous_reasoning) + "\n\n"
+        )
+
+    force_answer_note = ""
+    if iteration == max_iterations:
+        force_answer_note = (
+            "\nIMPORTANT: This is the final iteration. You MUST choose APPROVE.\n"
+            "Keep the best chunks available — the main LLM will do its best with them.\n"
+        )
+
+    return f"""The student asked: "{query}"
+Iteration: {iteration}/{max_iterations}
+
+Retrieved context chunks:
+
+{numbered_context}
+
+{previous_reasoning_section}Decide whether this context is sufficient for the
+main LLM to answer the student's query well. Return your structured decision.
+{force_answer_note}"""

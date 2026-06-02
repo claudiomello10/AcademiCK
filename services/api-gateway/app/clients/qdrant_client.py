@@ -5,9 +5,7 @@ from datetime import datetime
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Filter, FieldCondition, MatchValue,
-    SparseVector, NamedSparseVector,
-    SearchRequest, NamedVector,
-    Prefetch, FusionQuery, Fusion,
+    SparseVector, NamedVector,
     VectorParams, Distance, SparseVectorParams, SparseIndexParams,
     models
 )
@@ -56,81 +54,99 @@ class QdrantManager:
         )
         logger.info(f"Collection '{self.collection}' created successfully")
 
+    @staticmethod
+    def _build_book_filter(book_filter: Optional[str]) -> Optional[Filter]:
+        if not book_filter:
+            return None
+        return Filter(
+            must=[FieldCondition(key="book_name", match=MatchValue(value=book_filter))]
+        )
+
+    @staticmethod
+    def _format_point(point, score: float) -> Dict[str, Any]:
+        payload = point.payload or {}
+        return {
+            "id": str(point.id),
+            "score": score,
+            "text": payload.get("text", ""),
+            "book_name": payload.get("book_name", ""),
+            "chapter_title": payload.get("chapter_title", ""),
+            "topic": payload.get("topic", ""),
+            "is_introduction": payload.get("is_introduction", False),
+            "chunk_id": payload.get("chunk_id", ""),
+            "page_number": payload.get("page_number"),
+        }
+
+    @staticmethod
+    def _normalize_scores(points) -> Dict[str, float]:
+        """Min-max normalize point scores to [0, 1], keyed by point id."""
+        if not points:
+            return {}
+        scores = [p.score for p in points]
+        lo, hi = min(scores), max(scores)
+        rng = hi - lo
+        return {
+            str(p.id): ((p.score - lo) / rng if rng > 0 else 1.0)
+            for p in points
+        }
+
     async def search_hybrid(
         self,
         dense_vector: List[float],
         sparse_vector: Optional[Dict[int, float]] = None,
         limit: int = 10,
         book_filter: Optional[str] = None,
-        score_threshold: float = 0.0
+        dense_weight: float = 0.5,
+        sparse_weight: float = 0.5,
     ) -> List[Dict[str, Any]]:
-        """
-        Perform hybrid search combining dense and sparse vectors.
+        """Hybrid search with weighted score fusion.
 
-        Uses Reciprocal Rank Fusion (RRF) to combine results.
+        Dense and sparse are queried separately and their scores min-max
+        normalized (cosine and sparse-dot scores aren't on the same scale),
+        then combined as dense_weight*dense + sparse_weight*sparse.
         """
         try:
-            # Build filter if specified
-            query_filter = None
-            if book_filter:
-                query_filter = Filter(
-                    must=[
-                        FieldCondition(
-                            key="book_name",
-                            match=MatchValue(value=book_filter)
-                        )
-                    ]
-                )
+            query_filter = self._build_book_filter(book_filter)
+            oversample = limit * 3
 
-            # Build prefetch queries
-            prefetch = [
-                Prefetch(
-                    query=dense_vector,
-                    using="dense",
-                    limit=limit * 3
-                )
-            ]
-
-            # Add sparse prefetch if available
-            if sparse_vector:
-                sparse_indices = list(sparse_vector.keys())
-                sparse_values = list(sparse_vector.values())
-                prefetch.append(
-                    Prefetch(
-                        query=SparseVector(
-                            indices=sparse_indices,
-                            values=sparse_values
-                        ),
-                        using="sparse",
-                        limit=limit * 3
-                    )
-                )
-
-            # Execute hybrid search with RRF fusion
-            results = self.client.query_points(
+            dense_points = self.client.query_points(
                 collection_name=self.collection,
-                prefetch=prefetch,
-                query=FusionQuery(fusion=Fusion.RRF),
-                limit=limit,
+                query=dense_vector,
+                using="dense",
+                limit=oversample,
                 query_filter=query_filter,
-                with_payload=True
-            )
+                with_payload=True,
+            ).points
 
-            # Transform results
-            return [
-                {
-                    "id": str(point.id),
-                    "score": point.score,
-                    "text": point.payload.get("text", ""),
-                    "book_name": point.payload.get("book_name", ""),
-                    "chapter_title": point.payload.get("chapter_title", ""),
-                    "topic": point.payload.get("topic", ""),
-                    "is_introduction": point.payload.get("is_introduction", False),
-                    "chunk_id": point.payload.get("chunk_id", ""),
-                    "page_number": point.payload.get("page_number")
-                }
-                for point in results.points
+            sparse_points = []
+            if sparse_vector:
+                sparse_points = self.client.query_points(
+                    collection_name=self.collection,
+                    query=SparseVector(
+                        indices=list(sparse_vector.keys()),
+                        values=list(sparse_vector.values()),
+                    ),
+                    using="sparse",
+                    limit=oversample,
+                    query_filter=query_filter,
+                    with_payload=True,
+                ).points
+
+            dense_norm = self._normalize_scores(dense_points)
+            sparse_norm = self._normalize_scores(sparse_points)
+
+            points_by_id = {str(p.id): p for p in [*dense_points, *sparse_points]}
+            fused = [
+                (
+                    dense_weight * dense_norm.get(pid, 0.0)
+                    + sparse_weight * sparse_norm.get(pid, 0.0),
+                    point,
+                )
+                for pid, point in points_by_id.items()
             ]
+            fused.sort(key=lambda item: item[0], reverse=True)
+
+            return [self._format_point(point, score) for score, point in fused[:limit]]
 
         except Exception as e:
             logger.error(f"Hybrid search failed: {e}")
@@ -146,40 +162,14 @@ class QdrantManager:
         Perform dense-only vector search.
         """
         try:
-            # Build filter if specified
-            query_filter = None
-            if book_filter:
-                query_filter = Filter(
-                    must=[
-                        FieldCondition(
-                            key="book_name",
-                            match=MatchValue(value=book_filter)
-                        )
-                    ]
-                )
-
             results = self.client.search(
                 collection_name=self.collection,
                 query_vector=NamedVector(name="dense", vector=vector),
                 limit=limit,
-                query_filter=query_filter,
+                query_filter=self._build_book_filter(book_filter),
                 with_payload=True
             )
-
-            return [
-                {
-                    "id": str(point.id),
-                    "score": point.score,
-                    "text": point.payload.get("text", ""),
-                    "book_name": point.payload.get("book_name", ""),
-                    "chapter_title": point.payload.get("chapter_title", ""),
-                    "topic": point.payload.get("topic", ""),
-                    "is_introduction": point.payload.get("is_introduction", False),
-                    "chunk_id": point.payload.get("chunk_id", ""),
-                    "page_number": point.payload.get("page_number")
-                }
-                for point in results
-            ]
+            return [self._format_point(point, point.score) for point in results]
 
         except Exception as e:
             logger.error(f"Dense search failed: {e}")

@@ -3,7 +3,7 @@
 # Web Framework
 fastapi==0.115.12
 uvicorn==0.34.3
-pydantic==2.11.5
+pydantic==2.12.5
 pydantic-settings==2.7.1
 
 # Database
@@ -24,6 +24,9 @@ aiohttp==3.12.11
 openai
 anthropic
 deepseek
+
+# Agent framework
+pydantic-ai-slim[openai,anthropic]==1.97.0
 # Security
 bcrypt==4.3.0
 python-multipart==0.0.20
