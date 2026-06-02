@@ -18,7 +18,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 
 ## Features
 
-- **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with Reciprocal Rank Fusion for accurate retrieval
+- **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with intent-tuned weighted score fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
 - **Multi-Provider LLM** — Choose between OpenAI, Anthropic, or DeepSeek models per query
 - **Agentic Context Curation** — Multi-iteration agent drops noise and fetches missing context before answer generation
