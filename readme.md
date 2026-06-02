@@ -20,7 +20,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 
 - **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with intent-tuned weighted score fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
-- **Multi-Provider LLM** — Choose between OpenAI, Anthropic, or DeepSeek models per query
+- **Multi-Provider LLM** — Choose between OpenAI, Anthropic, DeepSeek, or self-hosted local models (vLLM, Ollama, …) per query
 - **Agentic Context Curation** — Multi-iteration agent drops noise and fetches missing context before answer generation
 - **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
@@ -58,7 +58,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 | Classifier| |  Service   | | Vectors  | |  Cache   | |  Database  |
 +-----------+ +------------+ +----------+ +----------+ +------------+
 
-                    LLM APIs: OpenAI / Anthropic / DeepSeek
+           LLM APIs: OpenAI / Anthropic / DeepSeek / Local (vLLM, Ollama, …)
 ```
 
 > All internal services communicate over an isolated Docker network. Only nginx is exposed to the host.
@@ -94,7 +94,7 @@ All three LLM stages (query enhancement, curation, answer) run through Pydantic 
 ### Prerequisites
 
 - **Docker** and **Docker Compose** v2.0+
-- At least one LLM API key ([OpenAI](https://platform.openai.com/api-keys), [Anthropic](https://console.anthropic.com/), or [DeepSeek](https://platform.deepseek.com/))
+- At least one LLM provider: an API key ([OpenAI](https://platform.openai.com/api-keys), [Anthropic](https://console.anthropic.com/), or [DeepSeek](https://platform.deepseek.com/)), or a self-hosted OpenAI-compatible server (see [Local LLMs](docs/local-llms.md))
 - **16GB+ RAM** recommended for smooth performance
 - **NVIDIA GPU** with CUDA (recommended) — or set `EMBEDDING_DEVICE=cpu` for CPU-only mode
 
@@ -166,8 +166,10 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | `OPENAI_API_KEY`            | At least one | OpenAI API key                                         |
 | `ANTHROPIC_API_KEY`         | At least one | Anthropic API key                                      |
 | `DEEPSEEK_API_KEY`          | At least one | DeepSeek API key                                       |
+| `LOCAL_LLM_BASE_URL`        | No           | OpenAI-compatible URL for a self-hosted LLM (default: `http://host.docker.internal:8000/v1`). See [Local LLMs](docs/local-llms.md) |
+| `LOCAL_LLM_API_KEY`         | No           | Token for the local LLM server (default: `EMPTY`)      |
 | `DEFAULT_SUBJECT`           | No           | Academic subject (default: Machine Learning)           |
-| `AVAILABLE_MODELS`          | Yes          | JSON array of models offered in the frontend dropdown  |
+| `AVAILABLE_MODELS`          | Yes          | JSON array of models for the frontend dropdown; each `value` needs a `provider/` prefix (`openai/`, `anthropic/`, `deepseek/`, `local/`) |
 | `DEFAULT_MODEL_FRONTEND`    | Yes          | Initially-selected model (a `value` in `AVAILABLE_MODELS`) |
 | `AGENT_ENABLED`             | No           | Enable curation agent (default: true)                  |
 | `REASONING_TRACE_VISIBLE`   | No           | Expose the agent's reasoning trace in the chat UI (default: false) |
@@ -197,6 +199,7 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | Document                     | Description                                                    |
 | ---------------------------- | -------------------------------------------------------------- |
 | [Usage Guide](docs/USAGE.md)    | API examples, admin dashboard, PDF processing, troubleshooting |
+| [Local LLMs](docs/local-llms.md) | Run against a self-hosted LLM (vLLM, Ollama, …) and provider routing |
 | [Database Schema](docs/database.md) | PostgreSQL tables, relationships, and analytics            |
 | [Vector Store](docs/qdrant.md)  | Qdrant collection, vectors, payload, and retrieval             |
 | [Known Issues](docs/KNOWN_ISSUES.md) | Logged problems, root causes, and workarounds            |

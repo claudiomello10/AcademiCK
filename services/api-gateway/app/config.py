@@ -17,6 +17,13 @@ from pydantic_settings import BaseSettings
 from typing import List, Optional
 
 
+# Models are routed to a provider by an explicit "provider/" name prefix
+# (see app/services/agent_models.py). Canonical list, also used to validate
+# AVAILABLE_MODELS at startup so a misprefixed model fails fast instead of
+# silently falling through to OpenAI at request time.
+KNOWN_PROVIDER_PREFIXES = ("openai/", "anthropic/", "deepseek/", "local/")
+
+
 def _require_env(name: str) -> str:
     """Get a required environment variable or raise an error."""
     value = os.getenv(name)
@@ -64,12 +71,20 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
     deepseek_api_key: Optional[str] = os.getenv("DEEPSEEK_API_KEY")
 
+    # Provider base URLs (override to use a proxy or an OpenAI-compatible gateway).
+    deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+
+    # Local / self-hosted OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, ...).
+    # Used by models whose name is prefixed with "local/".
+    local_llm_base_url: Optional[str] = os.getenv("LOCAL_LLM_BASE_URL")
+    local_llm_api_key: str = os.getenv("LOCAL_LLM_API_KEY", "EMPTY")
+
     # Frontend model selector, served at runtime via GET /api/v1/models.
     available_models_raw: str = _require_env("AVAILABLE_MODELS")
     default_model_frontend: str = _require_env("DEFAULT_MODEL_FRONTEND")
 
     # Model for query enhancement (fast and cheap, runs on every query)
-    query_enhancement_model: str = os.getenv("QUERY_ENHANCEMENT_MODEL", "gpt-5-nano")
+    query_enhancement_model: str = os.getenv("QUERY_ENHANCEMENT_MODEL", "openai/gpt-5-nano")
 
     # Reasoning effort per pipeline stage ("none", "low", "medium", "high")
     query_enhancement_reasoning: str = os.getenv("QUERY_ENHANCEMENT_REASONING", "none")
@@ -95,7 +110,7 @@ class Settings(BaseSettings):
     # Agentic RAG (context curation)
     agent_enabled: bool = os.getenv("AGENT_ENABLED", "true").lower() == "true"
     agent_max_iterations: int = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
-    agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "gpt-5-nano")
+    agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "openai/gpt-5-nano")
     agent_curation_reasoning: str = os.getenv("AGENT_CURATION_REASONING", "none")
     agent_curation_timeout: float = float(os.getenv("AGENT_CURATION_TIMEOUT", "60"))
     agent_curation_max_tokens: int = int(os.getenv("AGENT_CURATION_MAX_TOKENS", "4096"))
@@ -149,6 +164,12 @@ def _parse_frontend_models(raw: str, default: str) -> List[dict]:
             raise RuntimeError(
                 "Each AVAILABLE_MODELS entry must be an object with non-empty string "
                 "'provider', 'value' and 'label' keys."
+            )
+        if not item["value"].startswith(KNOWN_PROVIDER_PREFIXES):
+            raise RuntimeError(
+                f'AVAILABLE_MODELS value "{item["value"]}" must start with a provider '
+                f'prefix {KNOWN_PROVIDER_PREFIXES} (e.g. "anthropic/claude-haiku-4-5"). '
+                f"Without a prefix the model would be sent to OpenAI."
             )
 
     if not any(item["value"] == default for item in parsed):

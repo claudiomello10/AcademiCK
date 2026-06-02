@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
 
         model = BGEM3FlagModel(
             settings.model_name,
-            device=device.type,  # "cuda" or "cpu"
+            devices=device.type,  # "cuda" or "cpu"
             use_fp16=settings.use_fp16 and device.type == "cuda"
         )
 

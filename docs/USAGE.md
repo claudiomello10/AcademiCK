@@ -232,9 +232,12 @@ curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_
 | `SESSION_SECRET` | Session token encryption key |
 | `ADMIN_PASSWORD` | Admin user password |
 | `GUEST_PASSWORD` | Guest user password |
-| `OPENAI_API_KEY` | OpenAI API key (at least one LLM key required) |
-| `ANTHROPIC_API_KEY` | Anthropic API key (at least one LLM key required) |
-| `DEEPSEEK_API_KEY` | DeepSeek API key (at least one LLM key required) |
+| `OPENAI_API_KEY` | OpenAI API key (at least one LLM provider required) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (at least one LLM provider required) |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (at least one LLM provider required) |
+
+> A self-hosted OpenAI-compatible server (vLLM, Ollama, …) counts as an LLM
+> provider and needs no API key — see [Local LLMs](local-llms.md).
 
 ### General
 
@@ -249,11 +252,20 @@ curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_
 
 ### LLM & RAG
 
+Models are routed to a provider by an explicit `provider/` prefix on the model
+name — `openai/`, `anthropic/`, `deepseek/`, or `local/` (an unprefixed name
+defaults to OpenAI). Every `*_MODEL` value and every `AVAILABLE_MODELS` entry
+should carry this prefix. See [Local LLMs](local-llms.md) for self-hosting and the
+full routing rules.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AVAILABLE_MODELS` | _(required)_ | JSON array of `{provider, value, label}` models offered in the frontend dropdown; served at runtime via `GET /api/v1/models` |
+| `AVAILABLE_MODELS` | _(required)_ | JSON array of `{provider, value, label}` models offered in the frontend dropdown; each `value` must start with a `provider/` prefix. Served at runtime via `GET /api/v1/models`; validated at startup |
 | `DEFAULT_MODEL_FRONTEND` | _(required)_ | Initially-selected model; must match a `value` in `AVAILABLE_MODELS` |
-| `QUERY_ENHANCEMENT_MODEL` | `gpt-5-nano` | Model for generating focused search queries (runs on every query) |
+| `QUERY_ENHANCEMENT_MODEL` | `openai/gpt-5-nano` | Model for generating focused search queries (runs on every query). Uses structured output — **must support tool calling** |
+| `LOCAL_LLM_BASE_URL` | `http://host.docker.internal:8000/v1` | OpenAI-compatible base URL for `local/` models (self-hosted server on the same host by default) |
+| `LOCAL_LLM_API_KEY` | `EMPTY` | Token for the local LLM server (most ignore it; the client requires a non-empty value) |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek base URL (override for a proxy/gateway) |
 | `LLM_MAX_TOKENS` | `16384` | Maximum completion tokens (increase for reasoning models) |
 | `TOP_K_SEARCHING` | `10` | Retrieval chunks for `searching_for_information` intent |
 | `TOP_K_DEFAULT` | `6` | Retrieval chunks for all other intents |
@@ -271,7 +283,7 @@ curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_
 |----------|---------|-------------|
 | `AGENT_ENABLED` | `true` | Enable the curation agent (disable for single-pass RAG) |
 | `AGENT_MAX_ITERATIONS` | `3` | Maximum curation iterations before forcing approval |
-| `AGENT_CURATION_MODEL` | `gpt-5-nano` | Model for curation evaluation (should be fast and cheap) |
+| `AGENT_CURATION_MODEL` | `openai/gpt-5-nano` | Model for curation evaluation (fast and cheap). Uses structured output — **must support tool calling** |
 | `AGENT_CURATION_REASONING` | `none` | Reasoning effort for the curation agent (`none`, `low`, `medium`, `high`) |
 | `AGENT_CURATION_TIMEOUT` | `60` | Per-iteration timeout (seconds) for the curation model call; on timeout the request fails (SSE `error` event / HTTP 504 on `/single`) |
 | `AGENT_CURATION_MAX_TOKENS` | `4096` | Max response tokens for the curation model (also scales the Anthropic thinking budget) |
@@ -310,7 +322,7 @@ curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PDF_CHAPTER_DETECTION_MODEL` | `gpt-5-nano` | LLM model for chapter/heading classification during PDF processing |
+| `PDF_CHAPTER_DETECTION_MODEL` | `openai/gpt-5-nano` | LLM for chapter/heading classification during PDF processing. Accepts any `provider/` prefix (incl. `local/`); plain text, no tool calling required |
 | `MAX_UPLOAD_SIZE_MB` | `100` | Maximum PDF upload size in megabytes |
 | `CHUNK_SIZE` | `3000` | Text chunk size in characters (**changing requires re-processing all PDFs**) |
 | `CHUNK_OVERLAP` | `1000` | Character overlap between chunks (must be less than `CHUNK_SIZE`) |
