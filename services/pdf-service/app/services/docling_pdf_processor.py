@@ -6,6 +6,7 @@ import re
 from typing import List, Dict, Set
 
 from app.config import settings
+from app.services.llm_client import build_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +142,7 @@ class DoclingPDFProcessor:
         the full set of headings so every heading becomes a chapter (flat fallback).
         """
         try:
-            if not settings.openai_api_key:
-                raise ValueError("No OpenAI API key configured")
-
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key)
+            client, model = build_chat_client(self.model)
 
             headings_text = "\n".join(f"- {h}" for h in headings)
             prompt = (
@@ -158,7 +155,7 @@ class DoclingPDFProcessor:
             )
 
             completion = client.chat.completions.create(
-                model=self.model,
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = completion.choices[0].message.content.strip()

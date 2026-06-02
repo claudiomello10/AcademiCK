@@ -13,9 +13,9 @@ from typing import List, Dict, Optional
 import fitz  # PyMuPDF
 from pypdf import PdfReader
 from langchain.text_splitter import NLTKTextSplitter
-from openai import OpenAI
 
 from app.config import settings
+from app.services.llm_client import build_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,7 @@ class DefaultPDFProcessor:
 
     def __init__(self, llm_model: str = settings.pdf_chapter_detection_model):
         """Initialize the DefaultPDFProcessor."""
-        self.model = llm_model
-        self.client = OpenAI(api_key=settings.openai_api_key)
+        self.client, self.model = build_chat_client(llm_model)
         self.chunk_size = settings.chunk_size  # Default 3000
         self.chunk_overlap = settings.chunk_overlap  # Default 1000
         self.min_chunk_length = settings.min_chunk_length  # Default 300

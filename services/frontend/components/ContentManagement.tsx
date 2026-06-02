@@ -715,7 +715,17 @@ const ContentManagement = () => {
                                             )}
                                         </div>
                                     </div>
-                                    <Progress value={job.progress} className="h-2" />
+                                    <Progress
+                                        value={job.status === 'failed' || job.status === 'cancelled' ? 100 : job.progress}
+                                        className="h-2"
+                                        indicatorClassName={
+                                            job.status === 'failed'
+                                                ? 'bg-red-500'
+                                                : job.status === 'cancelled'
+                                                    ? 'bg-orange-400'
+                                                    : undefined
+                                        }
+                                    />
                                     {job.warning && (
                                         <div className="flex items-center gap-2 p-2 rounded bg-yellow-50 border border-yellow-200">
                                             <AlertTriangle className="h-4 w-4 text-yellow-600 flex-shrink-0" />
@@ -723,7 +733,10 @@ const ContentManagement = () => {
                                         </div>
                                     )}
                                     {job.error && (
-                                        <p className="text-sm text-red-500">{job.error}</p>
+                                        <div className="flex items-start gap-2 p-2 rounded bg-red-50 border border-red-200">
+                                            <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0 mt-0.5" />
+                                            <span className="text-sm text-red-700 break-words">{job.error}</span>
+                                        </div>
                                     )}
                                 </div>
                             ))}
