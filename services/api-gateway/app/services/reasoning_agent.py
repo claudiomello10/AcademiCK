@@ -1,5 +1,6 @@
 """Curation Agent for Agentic RAG — evaluates and curates retrieved context."""
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -120,6 +121,7 @@ class CurationAgent:
             model=build_model(
                 settings.agent_curation_model,
                 settings.agent_curation_reasoning,
+                max_tokens=settings.agent_curation_max_tokens,
             ),
             output_type=KeepDecision,
             system_prompt=get_curation_system_prompt(subject, available_books),
@@ -135,7 +137,28 @@ class CurationAgent:
                 previous_reasoning=reasoning_trace,
             )
 
-            result = await agent.run(user_prompt)
+            logger.info(
+                f"[CurationAgent] Iter {iteration}/{max_iterations}: "
+                f"requesting decision (model={settings.agent_curation_model}, "
+                f"pool={len(context_pool)} chunks)"
+            )
+            call_start = time.time()
+            try:
+                result = await asyncio.wait_for(
+                    agent.run(user_prompt),
+                    timeout=settings.agent_curation_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[CurationAgent] Iter {iteration}/{max_iterations}: "
+                    f"timed out after {settings.agent_curation_timeout:.0f}s — "
+                    f"using context gathered so far ({len(context_pool)} chunks)"
+                )
+                reasoning_trace.append(
+                    f"[Iter {iteration}] Curation timed out; using gathered context"
+                )
+                break
+            call_ms = (time.time() - call_start) * 1000
             decision: KeepDecision = result.output
 
             usage = result.usage
@@ -144,10 +167,20 @@ class CurationAgent:
             reasoning_trace.append(
                 f"[Iter {iteration}] {decision.action}: {decision.reasoning}"
             )
+            logger.info(
+                f"[CurationAgent] Iter {iteration}/{max_iterations}: "
+                f"decision={decision.action} in {call_ms:.0f}ms "
+                f"(keep={len(decision.keep_indices)}, "
+                f"new_queries={len(decision.new_queries)})"
+            )
             self._log_decision(iteration, max_iterations, decision)
 
             # The agent determined the knowledge base can't answer this query.
             if decision.action == "NOT_IN_KB":
+                logger.info(
+                    f"[CurationAgent] NOT_IN_KB after {iteration} iteration(s), "
+                    f"{total_tokens} tokens — serving not-found message"
+                )
                 return AgentResult(
                     final_chunks=[],
                     iterations_used=iteration,
@@ -206,21 +239,37 @@ class CurationAgent:
                     }
                     for nq in decision.new_queries
                 ]
+                logger.info(
+                    f"[CurationAgent] Iter {iteration}: searching "
+                    f"{len(resolved_queries)} follow-up queries"
+                )
+                search_start = time.time()
                 new_results = await self.search_service.search_with_enhanced_queries(
                     queries=resolved_queries,
                     intent=intent,
                     top_k=top_k,
                 )
+                logger.info(
+                    f"[CurationAgent] Iter {iteration}: search returned "
+                    f"{len(new_results)} chunks in "
+                    f"{(time.time() - search_start) * 1000:.0f}ms"
+                )
                 total_searches += len(resolved_queries)
                 context_pool = self._merge_and_deduplicate(context_pool, new_results)
 
+        total_ms = (time.time() - agent_start) * 1000
+        logger.info(
+            f"[CurationAgent] Done: {iteration} iteration(s), "
+            f"{len(context_pool)} final chunks, {total_searches} searches, "
+            f"{total_tokens} tokens, {total_ms:.0f}ms"
+        )
         return AgentResult(
             final_chunks=context_pool,
             iterations_used=iteration,
             reasoning_trace=reasoning_trace,
             total_agent_tokens=total_tokens,
             total_agent_searches=total_searches,
-            agent_time_ms=(time.time() - agent_start) * 1000,
+            agent_time_ms=total_ms,
         )
 
     @staticmethod

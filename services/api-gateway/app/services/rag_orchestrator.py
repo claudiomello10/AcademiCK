@@ -259,6 +259,7 @@ class RAGOrchestrator:
         if not curated_chunks:
             # No grounding context survived retrieval/curation — serve the fixed
             # "not found" message instead of letting the model answer blind.
+            logger.info("No context after retrieval/curation — serving not-found message")
             response = NO_CONTEXT_MESSAGE
             await emit({"type": "token", "text": response})
         else:
@@ -274,6 +275,11 @@ class RAGOrchestrator:
             )
             history = _to_pydantic_ai_history(conversation_history)
 
+            logger.info(
+                f"Generating answer (model={model_name}, "
+                f"context={len(curated_chunks)} chunks)"
+            )
+            answer_start = time.time()
             try:
                 parts: List[str] = []
                 async with answer_agent.run_stream(
@@ -285,6 +291,10 @@ class RAGOrchestrator:
                     usage = run.usage
                     tokens_used = usage.total_tokens if usage else None
                 response = "".join(parts)
+                logger.info(
+                    f"Answer generated in {(time.time() - answer_start) * 1000:.0f}ms "
+                    f"({tokens_used} tokens)"
+                )
 
                 # If the stream produced nothing, retry once non-streaming.
                 if not response:
