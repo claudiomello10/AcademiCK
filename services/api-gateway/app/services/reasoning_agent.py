@@ -33,7 +33,7 @@ class NewQuery(BaseModel):
 class KeepDecision(BaseModel):
     """The curation agent's per-iteration decision."""
 
-    action: Literal["APPROVE", "REFINE"]
+    action: Literal["APPROVE", "REFINE", "NOT_IN_KB"]
     reasoning: str = Field(description="Brief justification for the decision.")
     keep_indices: List[int] = Field(
         default_factory=list,
@@ -43,7 +43,7 @@ class KeepDecision(BaseModel):
         default_factory=list,
         description=(
             "Follow-up queries to issue when action is REFINE. "
-            "Must be non-empty for REFINE; ignored for APPROVE."
+            "Must be non-empty for REFINE; ignored otherwise."
         ),
     )
 
@@ -58,6 +58,7 @@ class AgentResult:
     total_agent_tokens: int
     total_agent_searches: int
     agent_time_ms: float
+    not_found: bool = False
 
 
 class CurationAgent:
@@ -145,6 +146,18 @@ class CurationAgent:
             )
             self._log_decision(iteration, max_iterations, decision)
 
+            # The agent determined the knowledge base can't answer this query.
+            if decision.action == "NOT_IN_KB":
+                return AgentResult(
+                    final_chunks=[],
+                    iterations_used=iteration,
+                    reasoning_trace=reasoning_trace,
+                    total_agent_tokens=total_tokens,
+                    total_agent_searches=total_searches,
+                    agent_time_ms=(time.time() - agent_start) * 1000,
+                    not_found=True,
+                )
+
             if progress is not None:
                 if decision.action == "REFINE":
                     label = f"Refinando contexto ({iteration}/{max_iterations})..."
@@ -172,8 +185,9 @@ class CurationAgent:
                 if i in decision.keep_indices
             ]
 
-            # Safety floor: never let the pool go empty if we started with chunks.
-            if not context_pool and initial_chunks:
+            # Safety floor: guard against keep_indices that were all out of
+            # range. Intentional "nothing relevant" goes through NOT_IN_KB.
+            if decision.keep_indices and not context_pool and initial_chunks:
                 context_pool = [initial_chunks[0]]
                 reasoning_trace.append(
                     f"[Iter {iteration}] Safety floor: kept top initial chunk"

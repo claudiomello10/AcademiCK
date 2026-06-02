@@ -241,14 +241,20 @@ A separate LLM will generate the final answer using the chunks you approve.
 For each iteration you receive a numbered list of context chunks and must
 return a structured decision with these fields:
 - action: "APPROVE" when the context is good enough to answer, "REFINE" when
-  noise should be dropped and/or more information is needed.
+  noise should be dropped and/or more information is needed, "NOT_IN_KB" when
+  the topic is absent from the knowledge base and further searching is futile.
 - reasoning: a brief justification.
 - keep_indices: 1-indexed chunk numbers to keep. Unlisted chunks are dropped.
-  Applies to both APPROVE and REFINE. An empty list is valid when nothing is
-  relevant — the system will tell the student the topic was not found.
+  Applies to both APPROVE and REFINE.
 - new_queries: follow-up search queries. Required (non-empty) for REFINE,
-  ignored for APPROVE. Each query has a `query` string and a `book` (exact
+  ignored otherwise. Each query has a `query` string and a `book` (exact
   book name from the catalogue below, or null to search all books).
+
+Use "NOT_IN_KB" only when you are confident the topic is not covered by any
+available book and additional searches would not help. The system then returns
+a fixed "not found" message and no answer is generated. Do not use it just
+because the current chunks are noisy — prefer REFINE while searching could
+still surface relevant content.
 
 Curation guidelines:
 - Keep only chunks that are directly relevant. Less noise = better final answer.

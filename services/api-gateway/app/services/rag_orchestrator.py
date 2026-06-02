@@ -93,6 +93,12 @@ STAGE_LABELS = {
     "generating": "Gerando resposta...",
 }
 
+NO_CONTEXT_MESSAGE = (
+    "Não encontrei informações relevantes nos livros disponíveis para "
+    "responder a sua pergunta. Tente reformular a pergunta ou perguntar "
+    "sobre outro tópico."
+)
+
 
 class RAGOrchestrator:
     """Orchestrates the RAG pipeline for answering queries."""
@@ -246,57 +252,64 @@ class RAGOrchestrator:
             "label": STAGE_LABELS["generating"],
         })
 
-        system_prompt = get_rag_system_prompt(
-            intent=intent,
-            subject=subject,
-            context_chunks=curated_chunks,
-        )
         model_name = model or settings.default_model_frontend
-        answer_agent = Agent(
-            model=build_model(model_name, settings.rag_reasoning),
-            output_type=str,
-            system_prompt=system_prompt,
-        )
-        history = _to_pydantic_ai_history(conversation_history)
-
         response: str = ""
         tokens_used: Optional[int] = None
-        try:
-            parts: List[str] = []
-            async with answer_agent.run_stream(
-                query, message_history=history
-            ) as run:
-                async for delta in run.stream_text(delta=True):
-                    parts.append(delta)
-                    await emit({"type": "token", "text": delta})
-                usage = run.usage
-                tokens_used = usage.total_tokens if usage else None
-            response = "".join(parts)
 
-            # If the stream produced nothing, retry once non-streaming.
-            if not response:
-                logger.warning(
-                    f"Empty streamed response, retrying non-streaming: "
-                    f"model={model_name}, intent={intent}"
-                )
-                result = await answer_agent.run(query, message_history=history)
-                response = result.output or ""
-                usage = result.usage
-                tokens_used = usage.total_tokens if usage else None
-                if response:
-                    await emit({"type": "token", "text": response})
-
-            if not response:
-                logger.error(
-                    f"Empty LLM response after retry: "
-                    f"model={model_name}, intent={intent}"
-                )
-                response = "I apologize, but I was unable to generate a response. Please try again."
-                await emit({"type": "token", "text": response})
-        except Exception as e:
-            logger.error(f"LLM generation failed: {e}")
-            response = "I apologize, but I encountered an error generating a response. Please try again."
+        if not curated_chunks:
+            # No grounding context survived retrieval/curation — serve the fixed
+            # "not found" message instead of letting the model answer blind.
+            response = NO_CONTEXT_MESSAGE
             await emit({"type": "token", "text": response})
+        else:
+            system_prompt = get_rag_system_prompt(
+                intent=intent,
+                subject=subject,
+                context_chunks=curated_chunks,
+            )
+            answer_agent = Agent(
+                model=build_model(model_name, settings.rag_reasoning),
+                output_type=str,
+                system_prompt=system_prompt,
+            )
+            history = _to_pydantic_ai_history(conversation_history)
+
+            try:
+                parts: List[str] = []
+                async with answer_agent.run_stream(
+                    query, message_history=history
+                ) as run:
+                    async for delta in run.stream_text(delta=True):
+                        parts.append(delta)
+                        await emit({"type": "token", "text": delta})
+                    usage = run.usage
+                    tokens_used = usage.total_tokens if usage else None
+                response = "".join(parts)
+
+                # If the stream produced nothing, retry once non-streaming.
+                if not response:
+                    logger.warning(
+                        f"Empty streamed response, retrying non-streaming: "
+                        f"model={model_name}, intent={intent}"
+                    )
+                    result = await answer_agent.run(query, message_history=history)
+                    response = result.output or ""
+                    usage = result.usage
+                    tokens_used = usage.total_tokens if usage else None
+                    if response:
+                        await emit({"type": "token", "text": response})
+
+                if not response:
+                    logger.error(
+                        f"Empty LLM response after retry: "
+                        f"model={model_name}, intent={intent}"
+                    )
+                    response = "I apologize, but I was unable to generate a response. Please try again."
+                    await emit({"type": "token", "text": response})
+            except Exception as e:
+                logger.error(f"LLM generation failed: {e}")
+                response = "I apologize, but I encountered an error generating a response. Please try again."
+                await emit({"type": "token", "text": response})
 
         processing_time = (time.time() - start_time) * 1000
 
