@@ -74,7 +74,7 @@ When a user sends a query, the API Gateway orchestrates the following stages:
 2. **Hybrid search** with enhanced queries
 
    - Each query is embedded and matched against textbook chunks in Qdrant
-   - Dense and sparse scores are fused via Reciprocal Rank Fusion
+   - Dense and sparse scores are min-max normalized and fused via an intent-tuned weighted sum
    - Results are merged and deduplicated across queries
 3. **Agentic context curation** (when `AGENT_ENABLED=true`)
 
