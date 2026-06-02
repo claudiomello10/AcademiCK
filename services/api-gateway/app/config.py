@@ -141,9 +141,13 @@ def _parse_frontend_models(raw: str, default: str) -> List[dict]:
         raise RuntimeError("AVAILABLE_MODELS must be a non-empty JSON array.")
 
     for item in parsed:
-        if not isinstance(item, dict) or not {"provider", "value", "label"} <= item.keys():
+        if (
+            not isinstance(item, dict)
+            or not {"provider", "value", "label"} <= item.keys()
+            or not all(isinstance(item[k], str) and item[k].strip() for k in ("provider", "value", "label"))
+        ):
             raise RuntimeError(
-                "Each AVAILABLE_MODELS entry must be an object with "
+                "Each AVAILABLE_MODELS entry must be an object with non-empty string "
                 "'provider', 'value' and 'label' keys."
             )
 
