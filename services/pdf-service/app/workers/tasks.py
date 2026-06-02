@@ -30,13 +30,20 @@ except Exception as e:
 
 def embedding_error_message(error: httpx.HTTPStatusError) -> str:
     """Turn an embedding-service HTTP error into a readable job error."""
-    detail = ""
+    detail_obj: object = ""
     try:
-        detail = error.response.json().get("detail", "")
+        payload = error.response.json()
+        if isinstance(payload, dict):
+            detail_obj = payload.get("detail", "")
+        else:
+            detail_obj = payload
     except Exception:
-        detail = error.response.text
+        detail_obj = error.response.text
 
-    if "out of memory" in detail.lower() or "CUDA" in detail:
+    detail = detail_obj if isinstance(detail_obj, str) else str(detail_obj)
+    detail_lower = detail.lower()
+
+    if "out of memory" in detail_lower or "cuda" in detail_lower:
         return (
             "Embedding service ran out of GPU memory. "
             "Try again shortly or process fewer files at once."
