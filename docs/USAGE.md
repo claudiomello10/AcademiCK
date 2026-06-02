@@ -273,7 +273,7 @@ curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_
 | `AGENT_MAX_ITERATIONS` | `3` | Maximum curation iterations before forcing approval |
 | `AGENT_CURATION_MODEL` | `gpt-5-nano` | Model for curation evaluation (should be fast and cheap) |
 | `AGENT_CURATION_REASONING` | `none` | Reasoning effort for the curation agent (`none`, `low`, `medium`, `high`) |
-| `AGENT_CURATION_TIMEOUT` | `60` | Per-iteration timeout (seconds) for the curation model call; on timeout the agent uses the context gathered so far |
+| `AGENT_CURATION_TIMEOUT` | `60` | Per-iteration timeout (seconds) for the curation model call; on timeout the request fails (SSE `error` event / HTTP 504 on `/single`) |
 | `AGENT_CURATION_MAX_TOKENS` | `4096` | Max response tokens for the curation model (also scales the Anthropic thinking budget) |
 | `AGENT_MAX_CONTEXT_CHUNKS` | `18` | Maximum chunks in the agent's context pool |
 | `REASONING_TRACE_VISIBLE` | `false` | Expose the agent's reasoning trace in the chat UI as an expandable "ver raciocínio" toggle |
