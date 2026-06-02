@@ -53,10 +53,6 @@ class Settings(BaseSettings):
     anthropic_base_url: str = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 
-    # Local / self-hosted OpenAI-compatible endpoint, used by "local/" models.
-    local_llm_base_url: str = os.getenv("LOCAL_LLM_BASE_URL", "")
-    local_llm_api_key: str = os.getenv("LOCAL_LLM_API_KEY", "EMPTY")
-
     # Local / self-hosted OpenAI-compatible endpoint, used when the model name
     # is prefixed with "local/".
     local_llm_base_url: str = os.getenv("LOCAL_LLM_BASE_URL", "")
