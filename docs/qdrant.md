@@ -56,10 +56,10 @@ Created so filters and lookups stay fast:
 
 ## Retrieval
 
-`search_hybrid` issues two prefetches (dense and sparse, each `limit * 3`) and
-fuses them server-side with `Fusion.RRF`, returning the top `limit` points. A
-`book_name` filter narrows search to a single book. `search_dense` is a
-dense-only fallback. Per-intent dense/sparse weighting and `top_k` are
+`search_hybrid` queries dense and sparse separately (each `limit * 3`), min-max normalizes
+scores to `[0, 1]`, and fuses them as `dense_weight*dense + sparse_weight*sparse`,
+returning the top `limit` points. A `book_name` filter narrows search to a single book.
+`search_dense` is a dense-only fallback. Per-intent dense/sparse weighting and `top_k` are
 configured via environment variables (see [USAGE.md](USAGE.md)).
 
 Search results expose: `id`, `score`, `text`, `book_name`, `chapter_title`,
