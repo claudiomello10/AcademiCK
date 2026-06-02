@@ -28,6 +28,24 @@ except Exception as e:
     logger.warning(f"NLTK download failed: {e}")
 
 
+def embedding_error_message(error: httpx.HTTPStatusError) -> str:
+    """Turn an embedding-service HTTP error into a readable job error."""
+    detail = ""
+    try:
+        detail = error.response.json().get("detail", "")
+    except Exception:
+        detail = error.response.text
+
+    if "out of memory" in detail.lower() or "CUDA" in detail:
+        return (
+            "Embedding service ran out of GPU memory. "
+            "Try again shortly or process fewer files at once."
+        )
+    if detail:
+        return f"Embedding service error: {detail}"
+    return f"Embedding service returned HTTP {error.response.status_code}."
+
+
 def clean_text_for_postgres(text: str) -> str:
     """Remove null bytes and other problematic characters for PostgreSQL UTF-8."""
     if not text:
@@ -375,9 +393,14 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 )
                 response.raise_for_status()
                 embeddings_data = response.json()
-            except Exception as e:
+            except httpx.HTTPStatusError as e:
                 logger.error(f"Embedding service error: {e}")
-                raise
+                raise RuntimeError(embedding_error_message(e)) from e
+            except httpx.RequestError as e:
+                logger.error(f"Embedding service unreachable: {e}")
+                raise RuntimeError(
+                    "Could not reach the embedding service. It may be down or restarting."
+                ) from e
 
             dense_embeddings = embeddings_data.get("dense_embeddings", [])
             sparse_embeddings = embeddings_data.get("sparse_embeddings", [])
