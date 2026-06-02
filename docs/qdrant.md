@@ -1,7 +1,7 @@
 # Qdrant Vector Store
 
 AcademiCK stores chunk embeddings in a single Qdrant collection and uses hybrid
-(dense + sparse) retrieval with Reciprocal Rank Fusion. Relational metadata and
+(dense + sparse) retrieval with intent-tuned weighted score fusion. Relational metadata and
 the canonical chunk text live in PostgreSQL (see [database.md](database.md));
 each Qdrant point corresponds to one row in the `chunks` table.
 
