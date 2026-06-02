@@ -185,9 +185,9 @@ chunks in a vector database. To get good matches:
 - Be precise. Break complex queries into simpler core components. Each query
   should target a different aspect of the same topic to maximize coverage.
 - The <Book>name</Book> tag in user messages is ONLY a source filter. The
-  text inside is NOT a topic — it's the title of a book/article. Do not
-  include the tag content in the query text or the resolved query, and do
-  not try to explain it as a concept.
+  text inside is the title of a book/article, not a concept. Do not
+  explain the book name as a topic, and do not include the <Book> tags
+  themselves in the query text (use the `book` field for filtering).
 - If a <Book>name</Book> tag is present, set `book` to exactly that name
   (no omissions, no additions). If absent or not necessary, set `book` to
   null to search all books. If a past message mentioned a book but it's not
