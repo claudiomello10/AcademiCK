@@ -21,6 +21,10 @@ from app.utils.matching import match_book_name
 logger = logging.getLogger(__name__)
 
 
+class CurationTimeoutError(Exception):
+    """Raised when a curation model call exceeds AGENT_CURATION_TIMEOUT."""
+
+
 class NewQuery(BaseModel):
     """A follow-up search query the agent wants to issue."""
 
@@ -88,6 +92,8 @@ class CurationAgent:
                 top_k=top_k,
                 progress=progress,
             )
+        except CurationTimeoutError:
+            raise
         except Exception as e:
             logger.error(f"CurationAgent failed, falling back to single-pass: {e}")
             return AgentResult(
@@ -149,15 +155,14 @@ class CurationAgent:
                     timeout=settings.agent_curation_timeout,
                 )
             except asyncio.TimeoutError:
-                logger.warning(
+                logger.error(
                     f"[CurationAgent] Iter {iteration}/{max_iterations}: "
-                    f"timed out after {settings.agent_curation_timeout:.0f}s — "
-                    f"using context gathered so far ({len(context_pool)} chunks)"
+                    f"timed out after {settings.agent_curation_timeout:.0f}s"
                 )
-                reasoning_trace.append(
-                    f"[Iter {iteration}] Curation timed out; using gathered context"
+                raise CurationTimeoutError(
+                    f"A curadoria de contexto excedeu o tempo limite de "
+                    f"{settings.agent_curation_timeout:.0f}s. Tente novamente."
                 )
-                break
             call_ms = (time.time() - call_start) * 1000
             decision: KeepDecision = result.output
 

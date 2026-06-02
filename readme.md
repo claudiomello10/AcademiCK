@@ -199,6 +199,7 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | [Usage Guide](docs/USAGE.md)    | API examples, admin dashboard, PDF processing, troubleshooting |
 | [Database Schema](docs/database.md) | PostgreSQL tables, relationships, and analytics            |
 | [Vector Store](docs/qdrant.md)  | Qdrant collection, vectors, payload, and retrieval             |
+| [Known Issues](docs/KNOWN_ISSUES.md) | Logged problems, root causes, and workarounds            |
 | [Security Policy](SECURITY.md)  | Vulnerability reporting and deployment best practices          |
 | [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process                      |
 | [.env.example](.env.example)    | All configuration options with descriptions                    |

@@ -37,8 +37,15 @@ def _anthropic_thinking_budget(reasoning_effort: str, max_tokens: int) -> Option
     }.get(reasoning_effort)
 
 
-def build_model(model_name: str, reasoning_effort: str = "none") -> Model:
+def build_model(
+    model_name: str,
+    reasoning_effort: str = "none",
+    max_tokens: Optional[int] = None,
+) -> Model:
     """Build a Pydantic AI Model for the given model name and reasoning effort.
+
+    max_tokens caps the response (defaults to settings.llm_max_tokens) and,
+    for Anthropic, scales the thinking budget.
 
     reasoning_effort is one of "none", "low", "medium", "high". The mapping
     to provider-specific knobs is:
@@ -47,10 +54,11 @@ def build_model(model_name: str, reasoning_effort: str = "none") -> Model:
       - DeepSeek: passed as openai_reasoning_effort for reasoner models only.
     """
     provider = _provider_for(model_name)
+    max_tokens = max_tokens or settings.llm_max_tokens
 
     if provider == "anthropic":
-        budget = _anthropic_thinking_budget(reasoning_effort, settings.llm_max_tokens)
-        model_settings: dict = {"max_tokens": settings.llm_max_tokens}
+        budget = _anthropic_thinking_budget(reasoning_effort, max_tokens)
+        model_settings: dict = {"max_tokens": max_tokens}
         if budget is not None:
             model_settings["anthropic_thinking"] = {
                 "type": "enabled",
@@ -63,7 +71,7 @@ def build_model(model_name: str, reasoning_effort: str = "none") -> Model:
             base_url="https://api.deepseek.com/v1",
             api_key=settings.deepseek_api_key,
         )
-        model_settings = {"max_tokens": settings.llm_max_tokens}
+        model_settings = {"max_tokens": max_tokens}
         if reasoning_effort != "none" and "reasoner" in model_name.lower():
             model_settings["openai_reasoning_effort"] = reasoning_effort
         return OpenAIChatModel(
@@ -73,7 +81,7 @@ def build_model(model_name: str, reasoning_effort: str = "none") -> Model:
         )
 
     # OpenAI (default)
-    model_settings = {"max_completion_tokens": settings.llm_max_tokens}
+    model_settings = {"max_completion_tokens": max_tokens}
     if reasoning_effort != "none":
         model_settings["openai_reasoning_effort"] = reasoning_effort
     return OpenAIChatModel(model_name, settings=ModelSettings(**model_settings))

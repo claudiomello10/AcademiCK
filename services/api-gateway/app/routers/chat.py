@@ -15,6 +15,7 @@ from app.models.schemas import (
 )
 from app.config import settings
 from app.services.rag_orchestrator import RAGOrchestrator
+from app.services.reasoning_agent import CurationTimeoutError
 from app.services.session_service import ConversationFullError
 
 router = APIRouter()
@@ -265,11 +266,14 @@ async def chat_single(
     )
 
     # Process query without history
-    result = await orchestrator.process_single_query(
-        query=chat_request.query,
-        subject=session.get("subject", settings.default_subject),
-        model=chat_request.model
-    )
+    try:
+        result = await orchestrator.process_single_query(
+            query=chat_request.query,
+            subject=session.get("subject", settings.default_subject),
+            model=chat_request.model
+        )
+    except CurationTimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
 
     # Track usage stats
     await track_usage(

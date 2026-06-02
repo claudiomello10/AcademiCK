@@ -96,7 +96,9 @@ class Settings(BaseSettings):
     agent_enabled: bool = os.getenv("AGENT_ENABLED", "true").lower() == "true"
     agent_max_iterations: int = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
     agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "gpt-5-nano")
-    agent_curation_reasoning: str = os.getenv("AGENT_CURATION_REASONING", "low")
+    agent_curation_reasoning: str = os.getenv("AGENT_CURATION_REASONING", "none")
+    agent_curation_timeout: float = float(os.getenv("AGENT_CURATION_TIMEOUT", "60"))
+    agent_curation_max_tokens: int = int(os.getenv("AGENT_CURATION_MAX_TOKENS", "4096"))
     agent_max_context_chunks: int = int(os.getenv("AGENT_MAX_CONTEXT_CHUNKS", "18"))
     reasoning_trace_visible: bool = os.getenv("REASONING_TRACE_VISIBLE", "false").lower() == "true"
 
