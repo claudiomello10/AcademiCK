@@ -81,7 +81,7 @@ curl -N -X POST http://localhost/api/v1/chat \
 ```
 
 For one-shot JSON without conversation history (no streaming), use the
-`/single` endpoint which still returns a single `ChatResponse`:
+`/chat/single` endpoint, which returns a single `ChatResponse`:
 
 ```bash
 curl -X POST http://localhost/api/v1/chat/single \
@@ -274,7 +274,7 @@ full routing rules.
 |----------|---------|-------------|
 | `AVAILABLE_MODELS` | _(required)_ | JSON array of `{provider, value, label}` models offered in the frontend dropdown; each `value` must start with a `provider/` prefix. Served at runtime via `GET /api/v1/models`; validated at startup |
 | `DEFAULT_MODEL_FRONTEND` | _(required)_ | Initially-selected model; must match a `value` in `AVAILABLE_MODELS` |
-| `QUERY_ENHANCEMENT_MODEL` | `openai/gpt-5-nano` | Model for generating focused search queries (runs on every query). Uses structured output — **must support tool calling** |
+| `QUERY_ENHANCEMENT_MODEL` | `openai/gpt-5-nano` | Model for query resolution — rewriting the query with pronouns/references resolved from conversation history (runs on every query). Uses structured output — **must support tool calling** |
 | `LOCAL_LLM_BASE_URL` | `http://host.docker.internal:8000/v1` | OpenAI-compatible base URL for `local/` models (self-hosted server on the same host by default) |
 | `LOCAL_LLM_API_KEY` | `EMPTY` | Token for the local LLM server (most ignore it; the client requires a non-empty value) |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek base URL (override for a proxy/gateway) |
@@ -297,9 +297,9 @@ full routing rules.
 | `AGENT_MAX_QUERIES_PER_SEARCH` | `3` | Max queries batched into one `search` call |
 | `AGENT_NAV_MAX_ITEMS` | `3` | Max books/chapters per navigation call |
 | `AGENT_READ_CHAPTER_FULL_ENABLED` | `false` | Allow `read_chapter(mode="full")` to return whole chapters (token-heavy) |
-| `AGENT_CURATION_MODEL` | `openai/gpt-5-nano` | Model for curation. Uses tool calling — **the model must support function calling**; otherwise the agent falls back to single-pass |
+| `AGENT_CURATION_MODEL` | `openai/gpt-5-nano` | Model for curation. **Must support function calling** — the agent does all retrieval through tools |
 | `AGENT_CURATION_REASONING` | `none` | Reasoning effort for the curation agent (`none`, `low`, `medium`, `high`) |
-| `AGENT_CURATION_TIMEOUT` | `150` | Overall timeout (seconds) for the curation run (one model round-trip per tool call, so it must cover many rounds); on timeout the request fails (SSE `error` event / HTTP 504 on `/single`) |
+| `AGENT_CURATION_TIMEOUT` | `150` | Overall timeout (seconds) for the curation run (one model round-trip per tool call, so it must cover many rounds); on timeout the request fails (SSE `error` event / HTTP 504 on `/chat/single`) |
 | `AGENT_CURATION_MAX_TOKENS` | `8192` | Max response tokens per curation round; tool-calling reasoning needs headroom (also scales the Anthropic thinking budget) |
 | `AGENT_MAX_CONTEXT_CHUNKS` | `18` | Maximum chunks in the agent's final curated context |
 | `REASONING_TRACE_VISIBLE` | `false` | Expose the agent's reasoning trace in the chat UI as an expandable "ver raciocínio" toggle |

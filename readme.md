@@ -25,7 +25,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 - **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
 - **Admin Dashboard** — Content management, user management, and usage statistics
-- **Fully Dockerized** — One command to start 11 services with health checks and auto-restart
+- **Fully Dockerized** — One command to start 10 services with health checks and auto-restart
 - **GPU & CPU Support** — GPU-accelerated embeddings with automatic CPU fallback
 
 ## Architecture
@@ -80,7 +80,7 @@ When a user sends a query, the API Gateway orchestrates the following stages:
 
    - The main LLM receives curated chunks and generates a citation-backed response, streamed token-by-token
 
-All three LLM stages (query resolution, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat`, authenticated via `Authorization: Bearer` header) streams pipeline progress and answer tokens to the UI as Server-Sent Events; the legacy non-streaming response shape is still available at `/single`.
+All three LLM stages (query resolution, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat`, authenticated via `Authorization: Bearer` header) streams pipeline progress and answer tokens to the UI as Server-Sent Events; a non-streaming variant is available at `/chat/single`.
 
 ## Quick Start
 

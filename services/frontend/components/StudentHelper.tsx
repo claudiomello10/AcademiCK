@@ -50,7 +50,7 @@ interface Conversation {
 // Per-stage progress event coming over SSE from the backend.
 // Labels are produced by the backend so copy can change server-side.
 interface Stage {
-    stage: string;        // "intent" | "enhancing" | "searching" | "curating" | "generating"
+    stage: string;        // "intent" | "enhancing" | "curating" | "generating"
     label: string;        // human-readable label (Portuguese)
     done: boolean;        // set to true when superseded by the next stage
 }
