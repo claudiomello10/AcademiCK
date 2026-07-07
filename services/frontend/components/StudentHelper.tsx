@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-import { API_BASE_URL, API_ENDPOINTS } from '@/config/constants';
+import { API_BASE_URL, API_ENDPOINTS, authHeaders } from '@/config/constants';
 
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -327,10 +327,12 @@ const StudentHelper = () => {
     const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
     const [conversationTitle, setConversationTitle] = useState<string>('Nova Conversa');
 
-    // Fetch the available models from the api-gateway on mount. The list is
-    // served at runtime, so updating it only needs a container restart.
+    // Fetch the available models from the api-gateway once a session exists
+    // (the endpoint requires auth). The list is served at runtime, so
+    // updating it only needs a container restart.
     useEffect(() => {
-        fetch(`${API_BASE_URL}${API_ENDPOINTS.models}`)
+        if (!sessionId) return;
+        fetch(`${API_BASE_URL}${API_ENDPOINTS.models}`, { headers: authHeaders(sessionId) })
             .then(response => {
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return response.json();
@@ -343,13 +345,13 @@ const StudentHelper = () => {
                 setAvailableModels([]);
                 setModelsError('Falha ao carregar a lista de modelos.');
             });
-    }, []);
+    }, [sessionId]);
 
     useEffect(() => {
         const savedSession = localStorage.getItem('session');
         const savedUsername = localStorage.getItem('username');
         if (savedSession && savedUsername) {
-            fetch(`${API_BASE_URL}${API_ENDPOINTS.validateSession(savedSession)}`)
+            fetch(`${API_BASE_URL}${API_ENDPOINTS.validateSession}`, { headers: authHeaders(savedSession) })
                 .then(response => response.json())
                 .then(data => {
                     if (data.valid) {
@@ -359,7 +361,7 @@ const StudentHelper = () => {
                             setCurrentConversationId(data.conversation_id);
                         }
                         loadChatHistory(savedSession);
-                        loadBooks(); // Load books when session is valid
+                        loadBooks(savedSession); // Load books when session is valid
                         loadConversations(savedSession); // Load conversation history
                     } else {
                         handleLogout();
@@ -374,9 +376,9 @@ const StudentHelper = () => {
     }, []);
 
     // New function to load books
-    const loadBooks = async () => {
+    const loadBooks = async (sid: string) => {
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.books}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.books}`, { headers: authHeaders(sid) });
             if (response.ok) {
                 const data = await response.json();
                 // Transform response to match expected format
@@ -394,7 +396,7 @@ const StudentHelper = () => {
     // Load user's conversation history
     const loadConversations = async (sid: string) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/api/v1/conversations/${sid}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.conversations}`, { headers: authHeaders(sid) });
             if (response.ok) {
                 const data = await response.json();
                 setConversations(data.conversations || []);
@@ -411,7 +413,8 @@ const StudentHelper = () => {
         setIsLoading(true);
         try {
             const response = await fetch(
-                `${API_BASE_URL}/api/v1/conversations/${sessionId}/resume/${conversationId}`
+                `${API_BASE_URL}${API_ENDPOINTS.resumeConversation(conversationId)}`,
+                { headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 const data = await response.json();
@@ -447,10 +450,10 @@ const StudentHelper = () => {
         setIsLoading(true);
         try {
             const response = await fetch(
-                `${API_BASE_URL}/api/v1/conversations/${sessionId}/new`,
+                `${API_BASE_URL}${API_ENDPOINTS.newConversation}`,
                 {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...authHeaders(sessionId) },
                     body: JSON.stringify({ title: 'Nova Conversa' })
                 }
             );
@@ -488,8 +491,8 @@ const StudentHelper = () => {
 
         try {
             const response = await fetch(
-                `${API_BASE_URL}/api/v1/conversations/${sessionId}/${conversationId}`,
-                { method: 'DELETE' }
+                `${API_BASE_URL}/api/v1/conversations/${conversationId}`,
+                { method: 'DELETE', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 loadConversations(sessionId);
@@ -516,7 +519,7 @@ const StudentHelper = () => {
 
     const loadChatHistory = async (sid: string): Promise<void> => {
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.chatHistory(sid)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.chatHistory}`, { headers: authHeaders(sid) });
             if (response.ok) {
                 const data = await response.json();
                 if (!data.messages || data.messages.length === 0) {
@@ -549,8 +552,9 @@ const StudentHelper = () => {
         setError(null);
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.clearHistory(sessionId)}`, {
-                method: 'DELETE'
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.clearHistory}`, {
+                method: 'DELETE',
+                headers: authHeaders(sessionId)
             });
 
             if (response.ok) {
@@ -594,23 +598,24 @@ const StudentHelper = () => {
                 localStorage.setItem('username', data.username);
 
                 // Set subject for the session
-                await fetch(`${API_BASE_URL}${API_ENDPOINTS.setSubject(data.session_id)}`, {
+                await fetch(`${API_BASE_URL}${API_ENDPOINTS.setSubject}`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        ...authHeaders(data.session_id)
                     },
                     body: JSON.stringify({ subject })
                 });
 
                 // Fetch conversation_id from session validation
-                const validateRes = await fetch(`${API_BASE_URL}${API_ENDPOINTS.validateSession(data.session_id)}`);
+                const validateRes = await fetch(`${API_BASE_URL}${API_ENDPOINTS.validateSession}`, { headers: authHeaders(data.session_id) });
                 const validateData = await validateRes.json();
                 if (validateData.conversation_id) {
                     setCurrentConversationId(validateData.conversation_id);
                 }
 
                 loadChatHistory(data.session_id);
-                loadBooks(); // Load books after successful login
+                loadBooks(data.session_id); // Load books after successful login
                 loadConversations(data.session_id); // Load conversation history
             } else {
                 throw new Error(data.detail || 'Credenciais inválidas');
@@ -910,9 +915,9 @@ const StudentHelper = () => {
         };
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.chat(sessionId)}`, {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.chat}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+                headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders(sessionId) },
                 body: JSON.stringify({
                     query: userQuery,
                     model,
@@ -938,7 +943,7 @@ const StudentHelper = () => {
                     case 'status': {
                         setStages(prev => {
                             const next = prev.map(s => ({ ...s, done: true }));
-                            next.push({ ...(data as Stage), done: false });
+                            next.push({ ...(data as unknown as Stage), done: false });
                             return next;
                         });
                         break;
@@ -994,10 +999,11 @@ const StudentHelper = () => {
         setSubject(newSubject);
         if (sessionId) {
             try {
-                await fetch(`${API_BASE_URL}${API_ENDPOINTS.setSubject(sessionId)}`, {
+                await fetch(`${API_BASE_URL}${API_ENDPOINTS.setSubject}`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        ...authHeaders(sessionId)
                     },
                     body: JSON.stringify({ subject: newSubject })
                 });

@@ -80,7 +80,7 @@ When a user sends a query, the API Gateway orchestrates the following stages:
 
    - The main LLM receives curated chunks and generates a citation-backed response, streamed token-by-token
 
-All three LLM stages (query resolution, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat/{session_id}`) streams pipeline progress and answer tokens to the UI as Server-Sent Events; the legacy non-streaming response shape is still available at `/single`.
+All three LLM stages (query resolution, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat`, authenticated via `Authorization: Bearer` header) streams pipeline progress and answer tokens to the UI as Server-Sent Events; the legacy non-streaming response shape is still available at `/single`.
 
 ## Quick Start
 

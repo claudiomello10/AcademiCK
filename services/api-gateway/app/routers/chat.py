@@ -5,10 +5,11 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.dependencies import get_current_session
 from app.models.schemas import (
     ChatRequest, ChatResponse, SourceChunk,
     ConversationHistory, MessageHistory
@@ -104,14 +105,6 @@ async def track_usage(
         logger.warning(f"Failed to track usage stats: {e}")
 
 
-async def get_session_or_error(request: Request, session_id: str):
-    """Get session or raise 401 error."""
-    session = await request.app.state.session_service.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return session
-
-
 def _sse(event_type: str, data: Dict[str, Any]) -> str:
     """Format a single Server-Sent Event frame."""
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -134,11 +127,11 @@ def _build_chat_response(result: Dict[str, Any]) -> ChatResponse:
     )
 
 
-@router.post("/chat/{session_id}")
+@router.post("/chat")
 async def chat(
     request: Request,
-    session_id: str,
     chat_request: ChatRequest,
+    session: dict = Depends(get_current_session),
 ):
     """Send a message and stream a RAG-powered response as SSE.
 
@@ -149,7 +142,7 @@ async def chat(
       - done:   full ChatResponse payload after persistence succeeds.
       - error:  any failure; no messages are persisted in this case.
     """
-    session = await get_session_or_error(request, session_id)
+    session_id = session["session_id"]
 
     orchestrator = RAGOrchestrator(
         intent_client=request.app.state.intent_client,
@@ -244,18 +237,18 @@ async def chat(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.post("/chat/{session_id}/single", response_model=ChatResponse)
+@router.post("/chat/single", response_model=ChatResponse)
 async def chat_single(
     request: Request,
-    session_id: str,
-    chat_request: ChatRequest
+    chat_request: ChatRequest,
+    session: dict = Depends(get_current_session)
 ):
     """
     Send a single query without using conversation history.
 
     Useful for one-off questions.
     """
-    session = await get_session_or_error(request, session_id)
+    session_id = session["session_id"]
 
     # Create RAG orchestrator
     orchestrator = RAGOrchestrator(
@@ -303,12 +296,13 @@ async def chat_single(
     )
 
 
-@router.get("/chat/{session_id}/history", response_model=ConversationHistory)
-async def get_chat_history(request: Request, session_id: str):
+@router.get("/chat/history", response_model=ConversationHistory)
+async def get_chat_history(
+    request: Request,
+    session: dict = Depends(get_current_session)
+):
     """Get conversation history for a session."""
-    session = await get_session_or_error(request, session_id)
-
-    messages = await request.app.state.session_service.get_messages(session_id)
+    messages = await request.app.state.session_service.get_messages(session["session_id"])
 
     return ConversationHistory(
         messages=[
@@ -324,12 +318,13 @@ async def get_chat_history(request: Request, session_id: str):
     )
 
 
-@router.delete("/chat/{session_id}/history")
-async def clear_chat_history(request: Request, session_id: str):
+@router.delete("/chat/history")
+async def clear_chat_history(
+    request: Request,
+    session: dict = Depends(get_current_session)
+):
     """Clear conversation history for a session."""
-    session = await get_session_or_error(request, session_id)
-
-    await request.app.state.session_service.clear_messages(session_id)
+    await request.app.state.session_service.clear_messages(session["session_id"])
 
     return {"message": "Chat history cleared"}
 
@@ -339,14 +334,16 @@ async def clear_chat_history(request: Request, session_id: str):
 # ===========================================
 
 
-@router.get("/conversations/{session_id}", response_model=ConversationListResponse)
-async def list_conversations(request: Request, session_id: str):
+@router.get("/conversations", response_model=ConversationListResponse)
+async def list_conversations(
+    request: Request,
+    session: dict = Depends(get_current_session)
+):
     """
     List all conversations for the authenticated user.
 
     Returns conversations sorted by most recently updated.
     """
-    session = await get_session_or_error(request, session_id)
     user_id = session.get("user_id")
 
     conversations = await request.app.state.session_service.get_user_conversations(user_id)
@@ -367,18 +364,20 @@ async def list_conversations(request: Request, session_id: str):
     )
 
 
-@router.get("/conversations/{session_id}/resume/{conversation_id}", response_model=ConversationDetailResponse)
-async def resume_conversation(request: Request, session_id: str, conversation_id: str):
+@router.get("/conversations/resume/{conversation_id}", response_model=ConversationDetailResponse)
+async def resume_conversation(
+    request: Request,
+    conversation_id: str,
+    session: dict = Depends(get_current_session)
+):
     """
     Load and resume an old conversation.
 
     This loads the conversation messages into the current session,
     allowing the user to continue the conversation.
     """
-    session = await get_session_or_error(request, session_id)
-
     result = await request.app.state.session_service.load_conversation(
-        session_id=session_id,
+        session_id=session["session_id"],
         conversation_id=conversation_id
     )
 
@@ -402,11 +401,11 @@ async def resume_conversation(request: Request, session_id: str, conversation_id
     )
 
 
-@router.post("/conversations/{session_id}/new")
+@router.post("/conversations/new")
 async def create_new_conversation(
     request: Request,
-    session_id: str,
-    body: NewConversationRequest = NewConversationRequest()
+    body: NewConversationRequest = NewConversationRequest(),
+    session: dict = Depends(get_current_session)
 ):
     """
     Create a new conversation within the current session.
@@ -414,10 +413,8 @@ async def create_new_conversation(
     Use this when the current conversation reaches the 50 message limit,
     or when the user wants to start a fresh conversation on a new topic.
     """
-    session = await get_session_or_error(request, session_id)
-
     conversation_id = await request.app.state.session_service.create_new_conversation(
-        session_id=session_id,
+        session_id=session["session_id"],
         title=body.title
     )
 
@@ -431,19 +428,17 @@ async def create_new_conversation(
     }
 
 
-@router.put("/conversations/{session_id}/current/title")
+@router.put("/conversations/current/title")
 async def update_conversation_title(
     request: Request,
-    session_id: str,
-    body: UpdateTitleRequest
+    body: UpdateTitleRequest,
+    session: dict = Depends(get_current_session)
 ):
     """
     Update the title of the current conversation.
     """
-    session = await get_session_or_error(request, session_id)
-
     success = await request.app.state.session_service.update_conversation_title(
-        session_id=session_id,
+        session_id=session["session_id"],
         title=body.title
     )
 
@@ -453,21 +448,19 @@ async def update_conversation_title(
     return {"success": True, "title": body.title}
 
 
-@router.delete("/conversations/{session_id}/{conversation_id}")
+@router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     request: Request,
-    session_id: str,
-    conversation_id: str
+    conversation_id: str,
+    session: dict = Depends(get_current_session)
 ):
     """
     Delete a conversation and all its messages.
 
     If the deleted conversation is the current one, a new empty conversation is created.
     """
-    session = await get_session_or_error(request, session_id)
-
     success = await request.app.state.session_service.delete_conversation(
-        session_id=session_id,
+        session_id=session["session_id"],
         conversation_id=conversation_id
     )
 

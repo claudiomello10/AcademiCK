@@ -12,7 +12,7 @@ import {
     AlertCircle, Loader2, Check, X
 } from 'lucide-react';
 
-import { API_BASE_URL, API_ENDPOINTS } from '@/config/constants';
+import { API_BASE_URL, API_ENDPOINTS, authHeaders } from '@/config/constants';
 
 // UserForm types
 interface UserFormData {
@@ -161,7 +161,7 @@ const UserManagement = () => {
 
         setLoading(true);
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.users(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.users}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setUsers(data);
@@ -179,10 +179,11 @@ const UserManagement = () => {
         if (!sessionId) return;
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.users(sessionId)}`, {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.users}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...authHeaders(sessionId),
                 },
                 body: JSON.stringify(userForm),
             });
@@ -216,10 +217,11 @@ const UserManagement = () => {
         if (!sessionId) return;
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.userById(selectedUser.id, sessionId)}`, {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.userById(selectedUser.id)}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...authHeaders(sessionId),
                 },
                 body: JSON.stringify(userForm),
             });
@@ -252,10 +254,11 @@ const UserManagement = () => {
         if (!sessionId) return;
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.userStatus(userId, sessionId)}`, {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.userStatus(userId)}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...authHeaders(sessionId),
                 },
                 body: JSON.stringify({
                     status: currentStatus === 'active' ? 'inactive' : 'active'

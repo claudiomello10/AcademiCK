@@ -1,9 +1,10 @@
 """Books endpoints."""
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from typing import List
 import logging
 
+from app.dependencies import get_current_session
 from app.models.schemas import BookInfo, BookListResponse, ChapterInfo
 
 router = APIRouter()
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/books", response_model=BookListResponse)
-async def list_books(request: Request):
+async def list_books(request: Request, session: dict = Depends(get_current_session)):
     """Get list of available books and their chapters from Qdrant."""
     try:
         # Get books with chapters from Qdrant
@@ -49,7 +50,7 @@ async def list_books(request: Request):
 
 
 @router.get("/books/{book_id}", response_model=BookInfo)
-async def get_book(request: Request, book_id: str):
+async def get_book(request: Request, book_id: str, session: dict = Depends(get_current_session)):
     """Get details for a specific book."""
     try:
         async with request.app.state.db_pool.acquire() as conn:
@@ -95,7 +96,7 @@ async def get_book(request: Request, book_id: str):
 
 
 @router.get("/books/names/list")
-async def list_book_names(request: Request):
+async def list_book_names(request: Request, session: dict = Depends(get_current_session)):
     """Get simple list of book names for filtering."""
     try:
         # Try to get from Qdrant first (faster)

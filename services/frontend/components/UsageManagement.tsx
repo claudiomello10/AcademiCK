@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Users, Clock, AlertCircle, BookOpen, MessageSquare, Loader2 } from 'lucide-react';
 
-import { API_BASE_URL, API_ENDPOINTS } from '@/config/constants';
+import { API_BASE_URL, API_ENDPOINTS, authHeaders } from '@/config/constants';
 
 interface UsageStatsData {
     total_queries: number;
@@ -40,7 +40,7 @@ const UsageManagement = () => {
 
         setLoading(true);
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.usageStats(timeRange, sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.usageStats(timeRange)}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setStats(data);

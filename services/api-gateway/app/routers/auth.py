@@ -1,9 +1,11 @@
 """Authentication endpoints."""
 
-from fastapi import APIRouter, Request, HTTPException, Depends
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-import secrets
+from typing import Optional
 
+from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi.security import HTTPAuthorizationCredentials
+
+from app.dependencies import bearer_scheme, get_current_session
 from app.models.schemas import (
     LoginRequest, LoginResponse, SessionResponse,
     SetSubjectRequest, SubjectResponse
@@ -13,7 +15,6 @@ from app.utils.security import authenticate_user
 from app.routers.chat import track_usage
 
 router = APIRouter()
-security = HTTPBasic()
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -61,17 +62,27 @@ async def login(request: Request, credentials: LoginRequest):
     )
 
 
-@router.get("/validate-session/{session_id}", response_model=SessionResponse)
-async def validate_session(request: Request, session_id: str):
-    """Validate a session and return session info."""
-    result = await request.app.state.session_service.validate_session(session_id)
+@router.get("/validate-session", response_model=SessionResponse)
+async def validate_session(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+):
+    """Validate the bearer session and return session info."""
+    if credentials is None:
+        return SessionResponse(valid=False)
+    result = await request.app.state.session_service.validate_session(
+        credentials.credentials
+    )
     return SessionResponse(**result)
 
 
-@router.post("/logout/{session_id}")
-async def logout(request: Request, session_id: str):
+@router.post("/logout")
+async def logout(
+    request: Request,
+    session: dict = Depends(get_current_session)
+):
     """End a user session."""
-    session = await request.app.state.session_service.get_session(session_id)
+    session_id = session["session_id"]
 
     deleted = await request.app.state.session_service.delete_session(session_id)
 
@@ -92,34 +103,24 @@ async def logout(request: Request, session_id: str):
     return {"message": "Logged out successfully"}
 
 
-@router.post("/session/{session_id}/subject", response_model=SubjectResponse)
+@router.post("/session/subject", response_model=SubjectResponse)
 async def set_subject(
     request: Request,
-    session_id: str,
-    subject_request: SetSubjectRequest
+    subject_request: SetSubjectRequest,
+    session: dict = Depends(get_current_session)
 ):
     """Set the study subject for a session."""
-    session = await request.app.state.session_service.get_session(session_id)
-
-    if not session:
-        raise HTTPException(status_code=401, detail="Invalid session")
-
     await request.app.state.session_service.set_subject(
-        session_id,
+        session["session_id"],
         subject_request.subject
     )
 
     return SubjectResponse(subject=subject_request.subject)
 
 
-@router.get("/session/{session_id}/subject", response_model=SubjectResponse)
-async def get_subject(request: Request, session_id: str):
+@router.get("/session/subject", response_model=SubjectResponse)
+async def get_subject(session: dict = Depends(get_current_session)):
     """Get the current study subject for a session."""
-    session = await request.app.state.session_service.get_session(session_id)
-
-    if not session:
-        raise HTTPException(status_code=401, detail="Invalid session")
-
     return SubjectResponse(subject=session.get("subject", settings.default_subject))
 
 
@@ -175,10 +176,17 @@ async def admin_login(request: Request, credentials: LoginRequest):
     )
 
 
-@router.get("/admin/validate-session/{session_id}")
-async def validate_admin_session(request: Request, session_id: str):
+@router.get("/admin/validate-session")
+async def validate_admin_session(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+):
     """Validate an admin session."""
-    session = await request.app.state.session_service.get_session(session_id)
+    session = None
+    if credentials is not None:
+        session = await request.app.state.session_service.get_session(
+            credentials.credentials
+        )
 
     if not session:
         return {"valid": False, "message": "Session not found"}

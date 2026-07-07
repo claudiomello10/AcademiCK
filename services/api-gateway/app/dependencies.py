@@ -1,7 +1,11 @@
 """FastAPI dependencies for dependency injection."""
 
-from fastapi import Request, HTTPException
+from fastapi import Depends, Request, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
+
+# auto_error=False so a missing header yields our own 401 instead of a 403.
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_db_pool(request: Request):
@@ -34,13 +38,25 @@ async def get_embedding_client(request: Request):
     return request.app.state.embedding_client
 
 
-async def get_valid_session(request: Request, session_id: str):
+async def get_current_session(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> dict:
     """
-    Dependency to validate session and return session data.
+    Validate the session token from the Authorization: Bearer header.
 
-    Raises HTTPException if session is invalid.
+    Returns the session dict with "session_id" added.
+    Raises HTTPException if the header is missing or the session is invalid.
     """
-    session = await request.app.state.session_service.get_session(session_id)
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing Authorization header"
+        )
+
+    session = await request.app.state.session_service.get_session(
+        credentials.credentials
+    )
 
     if not session:
         raise HTTPException(
@@ -48,17 +64,16 @@ async def get_valid_session(request: Request, session_id: str):
             detail="Invalid or expired session"
         )
 
+    session["session_id"] = credentials.credentials
     return session
 
 
-async def get_admin_session(request: Request, session_id: str):
+async def get_admin_session(session: dict = Depends(get_current_session)) -> dict:
     """
     Dependency to validate admin session.
 
-    Raises HTTPException if session is invalid or not admin.
+    Raises HTTPException if the session is valid but not admin.
     """
-    session = await get_valid_session(request, session_id)
-
     if session.get("role") != "admin":
         raise HTTPException(
             status_code=403,
