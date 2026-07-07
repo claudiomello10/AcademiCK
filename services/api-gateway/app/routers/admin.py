@@ -559,7 +559,7 @@ async def get_system_info(request: Request, session_id: str):
     await require_admin(request, session_id)
 
     # Get Qdrant info
-    qdrant_info = request.app.state.qdrant.get_collection_info()
+    qdrant_info = await request.app.state.qdrant.get_collection_info()
 
     # Get active sessions count
     active_sessions = await request.app.state.session_service.get_active_sessions_count()
@@ -584,7 +584,7 @@ async def get_content_stats_alias(request: Request, session_id: str):
     await require_admin(request, session_id)
 
     # Get stats from Qdrant since PostgreSQL tables might be empty
-    qdrant_info = request.app.state.qdrant.get_collection_info()
+    qdrant_info = await request.app.state.qdrant.get_collection_info()
     books = await request.app.state.qdrant.get_books()
 
     # Handle vectors_count - it might be a dict for named vectors collections
@@ -1078,7 +1078,7 @@ async def upload_embedding_file(request: Request, session_id: str):
 
         # Upsert to Qdrant
         qdrant = request.app.state.qdrant
-        qdrant.client.upsert(
+        await qdrant.client.upsert(
             collection_name=qdrant.collection,
             points=points
         )
@@ -1110,7 +1110,7 @@ async def create_snapshot(request: Request, session_id: str = Query(...)):
     try:
         from app.utils.snapshot_helpers import save_metadata_to_file
 
-        result = request.app.state.qdrant.create_snapshot()
+        result = await request.app.state.qdrant.create_snapshot()
 
         # Save metadata alongside the snapshot file on disk
         async with request.app.state.db_pool.acquire() as conn:
@@ -1137,7 +1137,7 @@ async def list_snapshots(request: Request, session_id: str = Query(...)):
     try:
         from app.utils.snapshot_helpers import load_metadata_from_file
 
-        snapshots = request.app.state.qdrant.list_snapshots()
+        snapshots = await request.app.state.qdrant.list_snapshots()
 
         # Check which snapshots have stored metadata
         for snap in snapshots:
@@ -1177,7 +1177,7 @@ async def restore_snapshot(request: Request, snapshot_name: str, session_id: str
             )
 
         # Restore Qdrant snapshot
-        request.app.state.qdrant.restore_snapshot(snapshot_name)
+        await request.app.state.qdrant.restore_snapshot(snapshot_name)
 
         # Import stored metadata
         async with request.app.state.db_pool.acquire() as conn:
@@ -1208,7 +1208,7 @@ async def delete_snapshot(request: Request, snapshot_name: str, session_id: str 
     try:
         from app.utils.snapshot_helpers import delete_metadata_file
 
-        result = request.app.state.qdrant.delete_snapshot(snapshot_name)
+        result = await request.app.state.qdrant.delete_snapshot(snapshot_name)
 
         # Also clean up metadata file
         delete_metadata_file(snapshot_name, settings.snapshot_dir, settings.qdrant_collection)

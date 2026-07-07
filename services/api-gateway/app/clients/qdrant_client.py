@@ -2,10 +2,10 @@
 
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Filter, FieldCondition, MatchValue,
-    SparseVector, NamedVector,
+    SparseVector,
     VectorParams, Distance, SparseVectorParams, SparseIndexParams,
     models
 )
@@ -21,16 +21,16 @@ class QdrantManager:
         self.host = host
         self.port = port
         self.collection = collection
-        self.client = QdrantClient(host=host, port=port, timeout=60)
+        self.client = AsyncQdrantClient(host=host, port=port, timeout=60)
 
-    def ensure_collection(self):
+    async def ensure_collection(self):
         """Create the collection if it doesn't exist."""
-        if self.client.collection_exists(self.collection):
+        if await self.client.collection_exists(self.collection):
             logger.info(f"Collection '{self.collection}' already exists")
             return
 
         logger.info(f"Creating collection '{self.collection}'...")
-        self.client.create_collection(
+        await self.client.create_collection(
             collection_name=self.collection,
             vectors_config={
                 "dense": VectorParams(size=1024, distance=Distance.COSINE)
@@ -42,12 +42,12 @@ class QdrantManager:
         )
 
         for field in ["book_name", "chapter_title", "topic"]:
-            self.client.create_payload_index(
+            await self.client.create_payload_index(
                 collection_name=self.collection,
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD
             )
-        self.client.create_payload_index(
+        await self.client.create_payload_index(
             collection_name=self.collection,
             field_name="is_introduction",
             field_schema=models.PayloadSchemaType.BOOL
@@ -111,18 +111,18 @@ class QdrantManager:
             query_filter = self._build_book_filter(book_filter)
             oversample = limit * 3
 
-            dense_points = self.client.query_points(
+            dense_points = (await self.client.query_points(
                 collection_name=self.collection,
                 query=dense_vector,
                 using="dense",
                 limit=oversample,
                 query_filter=query_filter,
                 with_payload=True,
-            ).points
+            )).points
 
             sparse_points = []
             if sparse_vector:
-                sparse_points = self.client.query_points(
+                sparse_points = (await self.client.query_points(
                     collection_name=self.collection,
                     query=SparseVector(
                         indices=list(sparse_vector.keys()),
@@ -132,7 +132,7 @@ class QdrantManager:
                     limit=oversample,
                     query_filter=query_filter,
                     with_payload=True,
-                ).points
+                )).points
 
             dense_norm = self._normalize_scores(dense_points)
             sparse_norm = self._normalize_scores(sparse_points)
@@ -164,13 +164,14 @@ class QdrantManager:
         Perform dense-only vector search.
         """
         try:
-            results = self.client.search(
+            results = (await self.client.query_points(
                 collection_name=self.collection,
-                query_vector=NamedVector(name="dense", vector=vector),
+                query=vector,
+                using="dense",
                 limit=limit,
                 query_filter=self._build_book_filter(book_filter),
                 with_payload=True
-            )
+            )).points
             return [self._format_point(point, point.score) for point in results]
 
         except Exception as e:
@@ -185,7 +186,7 @@ class QdrantManager:
             offset = None
 
             while True:
-                result = self.client.scroll(
+                result = await self.client.scroll(
                     collection_name=self.collection,
                     limit=1000,
                     offset=offset,
@@ -216,7 +217,7 @@ class QdrantManager:
             offset = None
 
             while True:
-                result = self.client.scroll(
+                result = await self.client.scroll(
                     collection_name=self.collection,
                     limit=1000,
                     offset=offset,
@@ -265,7 +266,7 @@ class QdrantManager:
             offset = None
 
             while True:
-                points, offset = self.client.scroll(
+                points, offset = await self.client.scroll(
                     collection_name=self.collection,
                     limit=1000,
                     offset=offset,
@@ -305,7 +306,7 @@ class QdrantManager:
         tagged (older ingests), falls back to the chapter's first two chunks.
         """
         try:
-            all_chunks = self._sort_chunks(self._scroll_chapter(book_name, chapter_title))
+            all_chunks = self._sort_chunks(await self._scroll_chapter(book_name, chapter_title))
             if not intro_only:
                 return all_chunks
 
@@ -318,12 +319,12 @@ class QdrantManager:
             logger.error(f"Failed to get chapter chunks: {e}")
             return []
 
-    def _scroll_chapter(self, book_name: str, chapter_title: str) -> List[Dict[str, Any]]:
+    async def _scroll_chapter(self, book_name: str, chapter_title: str) -> List[Dict[str, Any]]:
         """Scroll all chunks of one chapter."""
         chunks: List[Dict[str, Any]] = []
         offset = None
         while True:
-            points, offset = self.client.scroll(
+            points, offset = await self.client.scroll(
                 collection_name=self.collection,
                 scroll_filter=Filter(
                     must=[
@@ -354,7 +355,7 @@ class QdrantManager:
             chunks: List[Dict[str, Any]] = []
             offset = None
             while True:
-                points, offset = self.client.scroll(
+                points, offset = await self.client.scroll(
                     collection_name=self.collection,
                     scroll_filter=Filter(
                         must=[FieldCondition(key="chapter_id", match=MatchValue(value=chapter_id))]
@@ -394,10 +395,10 @@ class QdrantManager:
             ),
         )
 
-    def get_collection_info(self) -> Dict[str, Any]:
+    async def get_collection_info(self) -> Dict[str, Any]:
         """Get collection information."""
         try:
-            info = self.client.get_collection(self.collection)
+            info = await self.client.get_collection(self.collection)
             return {
                 "points_count": info.points_count,
                 "vectors_count": info.vectors_count,
@@ -420,7 +421,7 @@ class QdrantManager:
         """
         try:
             # First, count how many points will be deleted
-            count_result = self.client.count(
+            count_result = await self.client.count(
                 collection_name=self.collection,
                 count_filter=Filter(
                     must=[
@@ -437,7 +438,7 @@ class QdrantManager:
                 return 0
 
             # Delete all points matching the book name
-            self.client.delete(
+            await self.client.delete(
                 collection_name=self.collection,
                 points_selector=Filter(
                     must=[
@@ -456,21 +457,21 @@ class QdrantManager:
             logger.error(f"Failed to delete book {book_name}: {e}")
             raise
 
-    def health_check(self) -> bool:
+    async def health_check(self) -> bool:
         """Check if Qdrant is healthy using collection existence check."""
         try:
             # Use collection_exists which is lighter than get_collections
             # and only checks our specific collection
-            return self.client.collection_exists(self.collection)
+            return await self.client.collection_exists(self.collection)
         except Exception:
             return False
 
     # Snapshot Management Methods
 
-    def create_snapshot(self) -> dict:
+    async def create_snapshot(self) -> dict:
         """Create a snapshot of the collection."""
         try:
-            result = self.client.create_snapshot(collection_name=self.collection)
+            result = await self.client.create_snapshot(collection_name=self.collection)
             return {
                 "success": True,
                 "snapshot_name": result.name,
@@ -480,10 +481,10 @@ class QdrantManager:
             logger.error(f"Failed to create snapshot: {e}")
             raise
 
-    def list_snapshots(self) -> list:
+    async def list_snapshots(self) -> list:
         """List all available snapshots."""
         try:
-            snapshots = self.client.list_snapshots(collection_name=self.collection)
+            snapshots = await self.client.list_snapshots(collection_name=self.collection)
             return [
                 {
                     "name": snap.name,
@@ -496,14 +497,14 @@ class QdrantManager:
             logger.error(f"Failed to list snapshots: {e}")
             raise
 
-    def restore_snapshot(self, snapshot_name: str) -> dict:
+    async def restore_snapshot(self, snapshot_name: str) -> dict:
         """Restore collection from a snapshot."""
         try:
             # Qdrant expects a full URL to download the snapshot from
             # We use the snapshot download URL from Qdrant itself
             snapshot_url = f"http://{self.host}:{self.port}/collections/{self.collection}/snapshots/{snapshot_name}"
 
-            self.client.recover_snapshot(
+            await self.client.recover_snapshot(
                 collection_name=self.collection,
                 location=snapshot_url
             )
@@ -515,10 +516,10 @@ class QdrantManager:
             logger.error(f"Failed to restore snapshot: {e}")
             raise
 
-    def delete_snapshot(self, snapshot_name: str) -> dict:
+    async def delete_snapshot(self, snapshot_name: str) -> dict:
         """Delete a snapshot."""
         try:
-            self.client.delete_snapshot(
+            await self.client.delete_snapshot(
                 collection_name=self.collection,
                 snapshot_name=snapshot_name
             )

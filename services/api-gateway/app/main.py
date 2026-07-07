@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
         port=settings.qdrant_port,
         collection=settings.qdrant_collection
     )
-    app.state.qdrant.ensure_collection()
+    await app.state.qdrant.ensure_collection()
     logger.info("Qdrant connected")
 
     # Initialize service clients
