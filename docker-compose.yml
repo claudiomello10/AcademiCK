@@ -134,6 +134,7 @@ services:
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET must be set in .env}
       - SESSION_TTL_MINUTES=${SESSION_TTL_MINUTES:-30}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost}
       - CONFIG_USERS_ENABLED=${CONFIG_USERS_ENABLED:-true}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
       - GUEST_PASSWORD=${GUEST_PASSWORD:?GUEST_PASSWORD must be set in .env}

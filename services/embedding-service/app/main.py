@@ -6,7 +6,6 @@ using the BAAI/bge-m3 model with GPU acceleration.
 """
 
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -103,15 +102,6 @@ app = FastAPI(
     description="BGE-M3 embedding generation service with GPU acceleration",
     version="1.0.0",
     lifespan=lifespan
-)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 

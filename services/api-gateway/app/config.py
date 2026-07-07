@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     session_secret: str = _require_env("SESSION_SECRET")
     session_ttl_minutes: int = int(os.getenv("SESSION_TTL_MINUTES", "30"))
 
+    # Browser origins allowed by CORS, comma-separated. The default matches
+    # the standard deployment where the frontend is served same-origin
+    # behind nginx on port 80.
+    cors_allowed_origins_raw: str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost")
+
     # Config users for testing
     config_users_enabled: bool = os.getenv("CONFIG_USERS_ENABLED", "true").lower() == "true"
     admin_password: str = _require_env("ADMIN_PASSWORD")
@@ -196,3 +201,9 @@ def _parse_frontend_models(raw: str, default: str) -> List[dict]:
 AVAILABLE_MODELS: List[dict] = _parse_frontend_models(
     settings.available_models_raw, settings.default_model_frontend
 )
+
+CORS_ALLOWED_ORIGINS: List[str] = [
+    o.strip() for o in settings.cors_allowed_origins_raw.split(",") if o.strip()
+]
+if not CORS_ALLOWED_ORIGINS:
+    raise RuntimeError("CORS_ALLOWED_ORIGINS must list at least one origin.")

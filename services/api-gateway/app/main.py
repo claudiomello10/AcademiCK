@@ -12,7 +12,7 @@ import asyncpg
 from redis import asyncio as aioredis
 import logging
 
-from app.config import settings
+from app.config import settings, CORS_ALLOWED_ORIGINS
 from app.routers import auth, chat, books, admin, health, models
 from app.clients.qdrant_client import QdrantManager
 from app.clients.intent_client import IntentClient
@@ -123,7 +123,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
