@@ -486,6 +486,8 @@ async def list_jobs(request: Request, session_id: str):
                                         SET status = $1, progress = $2, completed_at = NOW()
                                         WHERE id = $3
                                     """, status, progress, j["id"])
+                                    # New content just landed in Qdrant
+                                    request.app.state.qdrant.invalidate_catalog_cache()
                                 elif status == "failed":
                                     await conn.execute("""
                                         UPDATE processing_jobs
@@ -850,6 +852,8 @@ async def get_pdf_job_status(request: Request, session_id: str, job_id: str):
                                     SET status = $1, progress = $2, completed_at = NOW()
                                     WHERE id = $3
                                 """, new_status, new_progress, job_id)
+                                # New content just landed in Qdrant
+                                request.app.state.qdrant.invalidate_catalog_cache()
                             elif new_status == "failed":
                                 await conn.execute("""
                                     UPDATE processing_jobs
@@ -1082,6 +1086,7 @@ async def upload_embedding_file(request: Request, session_id: str):
             collection_name=qdrant.collection,
             points=points
         )
+        qdrant.invalidate_catalog_cache()
 
         return {
             "success": True,
@@ -1178,6 +1183,7 @@ async def restore_snapshot(request: Request, snapshot_name: str, session_id: str
 
         # Restore Qdrant snapshot
         await request.app.state.qdrant.restore_snapshot(snapshot_name)
+        request.app.state.qdrant.invalidate_catalog_cache()
 
         # Import stored metadata
         async with request.app.state.db_pool.acquire() as conn:
@@ -1309,6 +1315,8 @@ async def upload_snapshot(
                 files={"snapshot": (snapshot_filename, snapshot_content, "application/octet-stream")}
             )
             upload_response.raise_for_status()
+
+        request.app.state.qdrant.invalidate_catalog_cache()
 
         # Parse and import metadata into PostgreSQL
         metadata_content = await metadata_file.read()

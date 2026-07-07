@@ -1,5 +1,7 @@
 """Qdrant Vector Database Client."""
 
+import asyncio
+import time
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from qdrant_client import AsyncQdrantClient
@@ -17,11 +19,15 @@ logger = logging.getLogger(__name__)
 class QdrantManager:
     """Manager for Qdrant vector database operations."""
 
-    def __init__(self, host: str, port: int, collection: str):
+    def __init__(self, host: str, port: int, collection: str, catalog_ttl: float):
         self.host = host
         self.port = port
         self.collection = collection
         self.client = AsyncQdrantClient(host=host, port=port, timeout=60)
+        self._catalog_ttl = catalog_ttl
+        self._catalog_cache: Optional[Dict[str, Dict[str, List[str]]]] = None
+        self._catalog_cached_at: float = 0.0
+        self._catalog_lock = asyncio.Lock()
 
     async def ensure_collection(self):
         """Create the collection if it doesn't exist."""
@@ -180,122 +186,74 @@ class QdrantManager:
 
     async def get_books(self) -> List[str]:
         """Get list of unique book names in the collection."""
-        try:
-            # Scroll through all points to get unique book names
-            books = set()
-            offset = None
-
-            while True:
-                result = await self.client.scroll(
-                    collection_name=self.collection,
-                    limit=1000,
-                    offset=offset,
-                    with_payload=["book_name"]
-                )
-
-                points, next_offset = result
-
-                for point in points:
-                    if point.payload and "book_name" in point.payload:
-                        books.add(point.payload["book_name"])
-
-                if next_offset is None:
-                    break
-                offset = next_offset
-
-            return sorted(list(books))
-
-        except Exception as e:
-            logger.error(f"Failed to get books: {e}")
-            return []
+        return sorted((await self.get_library_map()).keys())
 
     async def get_books_with_chapters(self) -> List[Dict[str, Any]]:
         """Get list of books with their chapters from Qdrant payloads."""
-        try:
-            # Scroll through all points to collect book/chapter info
-            book_chapters: Dict[str, set] = {}
-            offset = None
+        library_map = await self.get_library_map()
+        return [
+            {
+                "name": book,
+                "chapters": [{"title": ch} for ch in sorted(c for c in chapters if c)],
+            }
+            for book, chapters in sorted(library_map.items())
+        ]
 
-            while True:
-                result = await self.client.scroll(
-                    collection_name=self.collection,
-                    limit=1000,
-                    offset=offset,
-                    with_payload=["book_name", "chapter_title"]
-                )
-
-                points, next_offset = result
-
-                for point in points:
-                    if point.payload:
-                        book_name = point.payload.get("book_name", "")
-                        chapter_title = point.payload.get("chapter_title", "")
-
-                        if book_name:
-                            if book_name not in book_chapters:
-                                book_chapters[book_name] = set()
-                            if chapter_title:
-                                book_chapters[book_name].add(chapter_title)
-
-                if next_offset is None:
-                    break
-                offset = next_offset
-
-            # Format result
-            books = []
-            for book_name in sorted(book_chapters.keys()):
-                chapters = sorted(list(book_chapters[book_name]))
-                books.append({
-                    "name": book_name,
-                    "chapters": [{"title": ch} for ch in chapters]
-                })
-
-            return books
-
-        except Exception as e:
-            logger.error(f"Failed to get books with chapters: {e}")
-            return []
+    def invalidate_catalog_cache(self) -> None:
+        """Drop the cached catalogue; next get_library_map re-scans."""
+        self._catalog_cache = None
 
     async def get_library_map(self) -> Dict[str, Dict[str, List[str]]]:
         """One-scroll catalogue: book -> chapter -> sorted distinct topics.
 
-        Backs list_chapters and list_topics with no extra DB calls.
+        Backs list_chapters, list_topics, and the book listings. Cached with
+        a TTL and invalidated on ingest/delete; the catalogue only changes
+        when content changes, so per-request full scans are wasted work.
         """
-        try:
-            tree: Dict[str, Dict[str, set]] = {}
-            offset = None
+        async with self._catalog_lock:
+            if (
+                self._catalog_cache is not None
+                and time.monotonic() - self._catalog_cached_at < self._catalog_ttl
+            ):
+                return self._catalog_cache
 
-            while True:
-                points, offset = await self.client.scroll(
-                    collection_name=self.collection,
-                    limit=1000,
-                    offset=offset,
-                    with_payload=["book_name", "chapter_title", "topic"],
-                )
+            try:
+                tree: Dict[str, Dict[str, set]] = {}
+                offset = None
 
-                for point in points:
-                    payload = point.payload or {}
-                    book = payload.get("book_name", "")
-                    if not book:
-                        continue
-                    chapter = payload.get("chapter_title", "")
-                    topic = payload.get("topic", "")
-                    chapters = tree.setdefault(book, {})
-                    topics = chapters.setdefault(chapter, set())
-                    if topic:
-                        topics.add(topic)
+                while True:
+                    points, offset = await self.client.scroll(
+                        collection_name=self.collection,
+                        limit=1000,
+                        offset=offset,
+                        with_payload=["book_name", "chapter_title", "topic"],
+                    )
 
-                if offset is None:
-                    break
+                    for point in points:
+                        payload = point.payload or {}
+                        book = payload.get("book_name", "")
+                        if not book:
+                            continue
+                        chapter = payload.get("chapter_title", "")
+                        topic = payload.get("topic", "")
+                        chapters = tree.setdefault(book, {})
+                        topics = chapters.setdefault(chapter, set())
+                        if topic:
+                            topics.add(topic)
 
-            return {
-                book: {ch: sorted(tps) for ch, tps in chapters.items()}
-                for book, chapters in tree.items()
-            }
+                    if offset is None:
+                        break
 
-        except Exception as e:
-            logger.error(f"Failed to build library map: {e}")
-            return {}
+                self._catalog_cache = {
+                    book: {ch: sorted(tps) for ch, tps in chapters.items()}
+                    for book, chapters in tree.items()
+                }
+                self._catalog_cached_at = time.monotonic()
+                return self._catalog_cache
+
+            except Exception as e:
+                logger.error(f"Failed to build library map: {e}")
+                return {}
 
     async def get_chapter_chunks(
         self, book_name: str, chapter_title: str, intro_only: bool = True
@@ -450,6 +408,7 @@ class QdrantManager:
                 )
             )
 
+            self.invalidate_catalog_cache()
             logger.info(f"Deleted {points_to_delete} points for book: {book_name}")
             return points_to_delete
 

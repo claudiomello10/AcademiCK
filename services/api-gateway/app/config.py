@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     top_k_searching: int = int(os.getenv("TOP_K_SEARCHING", "10"))
     top_k_default: int = int(os.getenv("TOP_K_DEFAULT", "6"))
 
+    # Library catalogue cache TTL in seconds. The catalogue is also
+    # invalidated explicitly on ingest/delete; the TTL is the fallback.
+    library_map_cache_ttl: float = float(os.getenv("LIBRARY_MAP_CACHE_TTL", "300"))
+
     # Search weights per intent (dense vs sparse)
     search_weight_qa_dense: float = float(os.getenv("SEARCH_WEIGHT_QA_DENSE", "0.6"))
     search_weight_qa_sparse: float = float(os.getenv("SEARCH_WEIGHT_QA_SPARSE", "0.4"))
