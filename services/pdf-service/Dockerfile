@@ -29,8 +29,15 @@ ENV NLTK_DATA=/app/nltk_data
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download NLTK data for text processing
-RUN python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
+# Download NLTK data for text processing. NLTK only picks a dir from
+# NLTK_DATA if it already exists, otherwise it silently falls back to
+# $HOME/nltk_data (root's home at this build stage) -- so create the
+# dir and pass download_dir explicitly, and fail the build if it fails.
+RUN mkdir -p /app/nltk_data && python -c "\
+import nltk, os; \
+d = os.environ['NLTK_DATA']; \
+assert nltk.download('punkt', download_dir=d, raise_on_error=True); \
+assert nltk.download('punkt_tab', download_dir=d, raise_on_error=True)"
 
 # Pre-download Docling layout models to avoid cold-start delay at runtime
 RUN python -c "from docling.document_converter import DocumentConverter; DocumentConverter()" 2>/dev/null || true
