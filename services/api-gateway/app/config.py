@@ -107,13 +107,20 @@ class Settings(BaseSettings):
     search_weight_searching_dense: float = float(os.getenv("SEARCH_WEIGHT_SEARCHING_DENSE", "0.5"))
     search_weight_searching_sparse: float = float(os.getenv("SEARCH_WEIGHT_SEARCHING_SPARSE", "0.5"))
 
-    # Agentic RAG (context curation)
-    agent_enabled: bool = os.getenv("AGENT_ENABLED", "true").lower() == "true"
-    agent_max_iterations: int = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
+    # Agentic RAG (context curation). The agent owns all retrieval via its tools.
+    # Single shared budget: every tool call (search or navigation) spends one
+    # action, since each call grows the context and makes later calls costlier.
+    agent_max_actions: int = int(os.getenv("AGENT_MAX_ACTIONS", "8"))
+    agent_max_queries_per_search: int = int(os.getenv("AGENT_MAX_QUERIES_PER_SEARCH", "3"))
+    agent_nav_max_items: int = int(os.getenv("AGENT_NAV_MAX_ITEMS", "3"))
+    # Gate read_chapter full-text mode (token-heavy).
+    agent_read_chapter_full_enabled: bool = os.getenv("AGENT_READ_CHAPTER_FULL_ENABLED", "false").lower() == "true"
     agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "openai/gpt-5-nano")
     agent_curation_reasoning: str = os.getenv("AGENT_CURATION_REASONING", "none")
-    agent_curation_timeout: float = float(os.getenv("AGENT_CURATION_TIMEOUT", "60"))
-    agent_curation_max_tokens: int = int(os.getenv("AGENT_CURATION_MAX_TOKENS", "4096"))
+    # Whole-run timeout. The agent makes one sequential model round-trip per tool
+    # call, so this must cover up to agent_max_actions rounds.
+    agent_curation_timeout: float = float(os.getenv("AGENT_CURATION_TIMEOUT", "150"))
+    agent_curation_max_tokens: int = int(os.getenv("AGENT_CURATION_MAX_TOKENS", "8192"))
     agent_max_context_chunks: int = int(os.getenv("AGENT_MAX_CONTEXT_CHUNKS", "18"))
     reasoning_trace_visible: bool = os.getenv("REASONING_TRACE_VISIBLE", "false").lower() == "true"
 

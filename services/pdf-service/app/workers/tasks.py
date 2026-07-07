@@ -440,6 +440,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "topic": chunk.get("topic", ""),
                         "text": chunk["text"],
                         "is_introduction": chunk.get("is_introduction", False),
+                        "chunk_index": chunk.get("chunk_index"),
                         "page_number": chunk.get("page"),
                         "created_at": datetime.utcnow().isoformat()
                     }

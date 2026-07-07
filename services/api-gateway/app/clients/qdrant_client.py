@@ -71,9 +71,11 @@ class QdrantManager:
             "text": payload.get("text", ""),
             "book_name": payload.get("book_name", ""),
             "chapter_title": payload.get("chapter_title", ""),
+            "chapter_id": payload.get("chapter_id", ""),
             "topic": payload.get("topic", ""),
             "is_introduction": payload.get("is_introduction", False),
             "chunk_id": payload.get("chunk_id", ""),
+            "chunk_index": payload.get("chunk_index"),
             "page_number": payload.get("page_number"),
         }
 
@@ -252,6 +254,145 @@ class QdrantManager:
         except Exception as e:
             logger.error(f"Failed to get books with chapters: {e}")
             return []
+
+    async def get_library_map(self) -> Dict[str, Dict[str, List[str]]]:
+        """One-scroll catalogue: book -> chapter -> sorted distinct topics.
+
+        Backs list_chapters and list_topics with no extra DB calls.
+        """
+        try:
+            tree: Dict[str, Dict[str, set]] = {}
+            offset = None
+
+            while True:
+                points, offset = self.client.scroll(
+                    collection_name=self.collection,
+                    limit=1000,
+                    offset=offset,
+                    with_payload=["book_name", "chapter_title", "topic"],
+                )
+
+                for point in points:
+                    payload = point.payload or {}
+                    book = payload.get("book_name", "")
+                    if not book:
+                        continue
+                    chapter = payload.get("chapter_title", "")
+                    topic = payload.get("topic", "")
+                    chapters = tree.setdefault(book, {})
+                    topics = chapters.setdefault(chapter, set())
+                    if topic:
+                        topics.add(topic)
+
+                if offset is None:
+                    break
+
+            return {
+                book: {ch: sorted(tps) for ch, tps in chapters.items()}
+                for book, chapters in tree.items()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to build library map: {e}")
+            return {}
+
+    async def get_chapter_chunks(
+        self, book_name: str, chapter_title: str, intro_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Fetch a chapter's chunks, ordered, for read_chapter.
+
+        For intro_only, returns the is_introduction chunk(s); when none are
+        tagged (older ingests), falls back to the chapter's first two chunks.
+        """
+        try:
+            all_chunks = self._sort_chunks(self._scroll_chapter(book_name, chapter_title))
+            if not intro_only:
+                return all_chunks
+
+            intro = [c for c in all_chunks if c.get("is_introduction")]
+            if intro:
+                return intro
+            return all_chunks[:2]
+
+        except Exception as e:
+            logger.error(f"Failed to get chapter chunks: {e}")
+            return []
+
+    def _scroll_chapter(self, book_name: str, chapter_title: str) -> List[Dict[str, Any]]:
+        """Scroll all chunks of one chapter."""
+        chunks: List[Dict[str, Any]] = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="book_name", match=MatchValue(value=book_name)),
+                        FieldCondition(key="chapter_title", match=MatchValue(value=chapter_title)),
+                    ]
+                ),
+                limit=1000,
+                offset=offset,
+                with_payload=True,
+            )
+            chunks.extend(self._format_point(p, 1.0) for p in points)
+            if offset is None:
+                break
+        return chunks
+
+    async def get_adjacent_chunks(
+        self, chapter_id: str, chunk_index: Optional[int], window: int = 1
+    ) -> List[Dict[str, Any]]:
+        """Fetch chunks adjacent to a hit within the same chapter, for expand_context.
+
+        Uses chunk_index when present; falls back to page_number proximity for
+        books indexed before chunk_index was added to the payload.
+        """
+        if not chapter_id:
+            return []
+        try:
+            chunks: List[Dict[str, Any]] = []
+            offset = None
+            while True:
+                points, offset = self.client.scroll(
+                    collection_name=self.collection,
+                    scroll_filter=Filter(
+                        must=[FieldCondition(key="chapter_id", match=MatchValue(value=chapter_id))]
+                    ),
+                    limit=1000,
+                    offset=offset,
+                    with_payload=True,
+                )
+                chunks.extend(self._format_point(p, 1.0) for p in points)
+                if offset is None:
+                    break
+
+            chunks = self._sort_chunks(chunks)
+
+            if chunk_index is not None and any(c.get("chunk_index") is not None for c in chunks):
+                lo, hi = chunk_index - window, chunk_index + window
+                return [
+                    c for c in chunks
+                    if c.get("chunk_index") is not None and lo <= c["chunk_index"] <= hi
+                ]
+
+            # Fallback: nearest neighbours by list position around the same page.
+            return chunks
+
+        except Exception as e:
+            logger.error(f"Failed to get adjacent chunks: {e}")
+            return []
+
+    @staticmethod
+    def _sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Order chunks by chunk_index, then page_number."""
+        return sorted(
+            chunks,
+            key=lambda c: (
+                c.get("chunk_index") if c.get("chunk_index") is not None else 1_000_000,
+                c.get("page_number") if c.get("page_number") is not None else 1_000_000,
+            ),
+        )
 
     def get_collection_info(self) -> Dict[str, Any]:
         """Get collection information."""
