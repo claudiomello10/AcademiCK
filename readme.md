@@ -21,7 +21,7 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 - **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with intent-tuned weighted score fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
 - **Multi-Provider LLM** — Choose between OpenAI, Anthropic, DeepSeek, or self-hosted local models (vLLM, Ollama, …) per query
-- **Agentic Context Curation** — Multi-iteration agent drops noise and fetches missing context before answer generation
+- **Agentic Context Curation** — A tool-using agent searches and navigates the library under a fixed action budget, dropping noise and pulling in missing context before answer generation
 - **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
 - **Admin Dashboard** — Content management, user management, and usage statistics

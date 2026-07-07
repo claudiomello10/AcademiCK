@@ -52,12 +52,6 @@ interface Conversation {
 interface Stage {
     stage: string;        // "intent" | "enhancing" | "searching" | "curating" | "generating"
     label: string;        // human-readable label (Portuguese)
-    queries?: number;     // searching: number of queries issued
-    iteration?: number;   // curating: 1-indexed iteration number
-    max_iterations?: number;
-    action?: 'APPROVE' | 'REFINE';
-    kept?: number;
-    new_searches?: number;
     done: boolean;        // set to true when superseded by the next stage
 }
 
