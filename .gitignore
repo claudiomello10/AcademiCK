@@ -1,5 +1,7 @@
 Livros/
 __pycache__/
+node_modules/
+*.tsbuildinfo
 .*
 temp*
 *.pkl
