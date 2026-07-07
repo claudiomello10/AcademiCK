@@ -19,9 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Docling model cache dirs
-ENV HF_HOME=/tmp/huggingface
-ENV TORCH_HOME=/tmp/torch
+# Model/data caches live under /app so they stay readable once the
+# container drops to the non-root user.
+ENV HF_HOME=/app/.cache/huggingface
+ENV TORCH_HOME=/app/.cache/torch
+ENV NLTK_DATA=/app/nltk_data
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -35,6 +37,13 @@ RUN python -c "from docling.document_converter import DocumentConverter; Documen
 
 # Copy application code
 COPY app/ ./app/
+
+# Run as non-root. /app/processed must exist in the image so the
+# pdf_uploads named volume is seeded with app ownership on first creation.
+RUN groupadd --system --gid 1000 app && useradd --system --uid 1000 --gid app app \
+    && mkdir -p /app/processed \
+    && chown -R app:app /app
+USER app
 
 # Expose port
 EXPOSE 8003

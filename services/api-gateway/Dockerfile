@@ -16,6 +16,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ ./app/
 
+# Run as non-root. uid 1000 matches the typical host user so the
+# ./data/qdrant_snapshots bind mount stays writable from both sides.
+RUN groupadd --system --gid 1000 app && useradd --system --uid 1000 --gid app app \
+    && mkdir -p /app/snapshots \
+    && chown -R app:app /app
+USER app
+
 # Expose port
 EXPOSE 8000
 

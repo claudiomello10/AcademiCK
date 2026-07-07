@@ -77,7 +77,7 @@ services:
       - BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-16}
       - MODEL_NAME=BAAI/bge-m3
     volumes:
-      - model_cache:/root/.cache/huggingface
+      - model_cache:/app/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -104,7 +104,7 @@ services:
       - DEVICE=cpu
       - MODEL_NAME=claudiomello/AcademiCK-intent-classifier
     volumes:
-      - model_cache:/root/.cache/huggingface
+      - model_cache:/app/.cache/huggingface
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
