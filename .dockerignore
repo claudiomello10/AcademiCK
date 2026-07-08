@@ -3,6 +3,7 @@
 # the frontend sources.
 *
 !services/frontend
+!services/frontend/**
 services/frontend/node_modules
 services/frontend/.next
 services/frontend/*.tsbuildinfo
