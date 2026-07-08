@@ -251,10 +251,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
         try:
             from app.services.default_pdf_processor import DefaultPDFProcessor
 
-            # Check if OpenAI API key is configured
-            if not settings.openai_api_key:
-                raise ValueError("OpenAI API key not configured")
-
+            # Raises when the chapter-detection model's provider key is missing.
             default_processor = DefaultPDFProcessor()
 
             task.update_state(state="PROCESSING", meta={
@@ -319,9 +316,10 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         reader, chapter, idx, summary_list, book_name, text_splitter
                     )
 
-                    for chunk in chapter_chunks:
+                    for ci, chunk in enumerate(chapter_chunks):
                         chunk["chapter_id"] = chapter_id
                         chunk["book_id"] = book_id
+                        chunk["chunk_index"] = ci
                         all_chunks.append(chunk)
 
                     chapters_info.append({
@@ -468,6 +466,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     "text": chunk["text"],
                     "topic": chunk.get("topic", ""),
                     "is_introduction": chunk.get("is_introduction", False),
+                    "chunk_index": chunk.get("chunk_index"),
                     "page_number": chunk.get("page"),
                     "char_count": len(chunk["text"])
                 })
@@ -516,12 +515,12 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 await conn.execute("""
                     INSERT INTO chunks
                     (id, book_id, chapter_id, qdrant_point_id, text, topic,
-                     is_introduction, page_number, char_count, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     is_introduction, chunk_index, page_number, char_count, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """, chunk["id"], chunk["book_id"], chunk["chapter_id"],
                    chunk["qdrant_point_id"], clean_text, clean_topic,
-                   chunk["is_introduction"], chunk.get("page_number"),
-                   len(clean_text), datetime.utcnow())
+                   chunk["is_introduction"], chunk.get("chunk_index"),
+                   chunk.get("page_number"), len(clean_text), datetime.utcnow())
 
             # Update book status
             await conn.execute("""
