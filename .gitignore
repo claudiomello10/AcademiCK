@@ -9,6 +9,7 @@ temp*
 !.env.example
 !.github/
 !.gitignore
+!.dockerignore
 *.snapshot
 *.checksum
 data/
