@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AcademiCK Intent Classification Service",
     description="Intent classification for RAG query routing",
-    version="1.0.0",
+    version="0.2.0-alpha",
     lifespan=lifespan
 )
 

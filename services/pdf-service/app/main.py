@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="AcademiCK PDF Processing Service",
     description="PDF processing and embedding generation",
-    version="1.0.0"
+    version="0.2.0-alpha"
 )
 
 

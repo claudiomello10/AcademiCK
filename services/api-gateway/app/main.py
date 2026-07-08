@@ -113,7 +113,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AcademiCK API Gateway",
     description="RAG-powered educational assistant API",
-    version="2.0.0",
+    version="0.2.0-alpha",
     lifespan=lifespan,
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,
@@ -143,7 +143,7 @@ async def root():
     """Root endpoint."""
     response = {
         "service": "AcademiCK API Gateway",
-        "version": "2.0.0",
+        "version": "0.2.0-alpha",
     }
     if settings.docs_enabled:
         response["docs"] = "/docs"

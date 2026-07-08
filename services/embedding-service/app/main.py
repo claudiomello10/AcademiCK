@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AcademiCK Embedding Service",
     description="BGE-M3 embedding generation service with GPU acceleration",
-    version="1.0.0",
+    version="0.2.0-alpha",
     lifespan=lifespan
 )
 
