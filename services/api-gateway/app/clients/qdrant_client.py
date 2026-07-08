@@ -304,10 +304,10 @@ class QdrantManager:
     ) -> List[Dict[str, Any]]:
         """Fetch chunks adjacent to a hit within the same chapter, for expand_context.
 
-        Uses chunk_index when present; falls back to page_number proximity for
-        books indexed before chunk_index was added to the payload.
+        Requires chunk_index on the target and its neighbours; chunks missing
+        it are never returned.
         """
-        if not chapter_id:
+        if not chapter_id or chunk_index is None:
             return []
         try:
             chunks: List[Dict[str, Any]] = []
@@ -328,15 +328,11 @@ class QdrantManager:
 
             chunks = self._sort_chunks(chunks)
 
-            if chunk_index is not None and any(c.get("chunk_index") is not None for c in chunks):
-                lo, hi = chunk_index - window, chunk_index + window
-                return [
-                    c for c in chunks
-                    if c.get("chunk_index") is not None and lo <= c["chunk_index"] <= hi
-                ]
-
-            # Fallback: nearest neighbours by list position around the same page.
-            return chunks
+            lo, hi = chunk_index - window, chunk_index + window
+            return [
+                c for c in chunks
+                if c.get("chunk_index") is not None and lo <= c["chunk_index"] <= hi
+            ]
 
         except Exception as e:
             logger.error(f"Failed to get adjacent chunks: {e}")
