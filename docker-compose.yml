@@ -77,7 +77,7 @@ services:
       - BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-16}
       - MODEL_NAME=BAAI/bge-m3
     volumes:
-      - model_cache:/root/.cache/huggingface
+      - model_cache:/app/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -104,7 +104,7 @@ services:
       - DEVICE=cpu
       - MODEL_NAME=claudiomello/AcademiCK-intent-classifier
     volumes:
-      - model_cache:/root/.cache/huggingface
+      - model_cache:/app/.cache/huggingface
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -134,6 +134,7 @@ services:
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET must be set in .env}
       - SESSION_TTL_MINUTES=${SESSION_TTL_MINUTES:-30}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost}
       - CONFIG_USERS_ENABLED=${CONFIG_USERS_ENABLED:-true}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
       - GUEST_PASSWORD=${GUEST_PASSWORD:?GUEST_PASSWORD must be set in .env}
@@ -152,12 +153,13 @@ services:
       - AVAILABLE_MODELS=${AVAILABLE_MODELS}
       - DEFAULT_MODEL_FRONTEND=${DEFAULT_MODEL_FRONTEND}
       # RAG pipeline tuning (per-stage models, reasoning effort, search weights)
-      - QUERY_ENHANCEMENT_MODEL=${QUERY_ENHANCEMENT_MODEL:-gpt-5-nano}
+      - QUERY_ENHANCEMENT_MODEL=${QUERY_ENHANCEMENT_MODEL:-openai/gpt-5-nano}
       - QUERY_ENHANCEMENT_REASONING=${QUERY_ENHANCEMENT_REASONING:-none}
       - RAG_REASONING=${RAG_REASONING:-none}
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-16384}
       - TOP_K_SEARCHING=${TOP_K_SEARCHING:-10}
       - TOP_K_DEFAULT=${TOP_K_DEFAULT:-6}
+      - LIBRARY_MAP_CACHE_TTL=${LIBRARY_MAP_CACHE_TTL:-300}
       - SEARCH_WEIGHT_QA_DENSE=${SEARCH_WEIGHT_QA_DENSE:-0.6}
       - SEARCH_WEIGHT_QA_SPARSE=${SEARCH_WEIGHT_QA_SPARSE:-0.4}
       - SEARCH_WEIGHT_SUMMARIZATION_DENSE=${SEARCH_WEIGHT_SUMMARIZATION_DENSE:-0.7}
@@ -167,10 +169,14 @@ services:
       - SEARCH_WEIGHT_SEARCHING_DENSE=${SEARCH_WEIGHT_SEARCHING_DENSE:-0.5}
       - SEARCH_WEIGHT_SEARCHING_SPARSE=${SEARCH_WEIGHT_SEARCHING_SPARSE:-0.5}
       # Agentic RAG
-      - AGENT_ENABLED=${AGENT_ENABLED:-true}
-      - AGENT_MAX_ITERATIONS=${AGENT_MAX_ITERATIONS:-3}
-      - AGENT_CURATION_MODEL=${AGENT_CURATION_MODEL:-gpt-5-nano}
-      - AGENT_CURATION_REASONING=${AGENT_CURATION_REASONING:-low}
+      - AGENT_MAX_ACTIONS=${AGENT_MAX_ACTIONS:-8}
+      - AGENT_MAX_QUERIES_PER_SEARCH=${AGENT_MAX_QUERIES_PER_SEARCH:-3}
+      - AGENT_NAV_MAX_ITEMS=${AGENT_NAV_MAX_ITEMS:-3}
+      - AGENT_READ_CHAPTER_FULL_ENABLED=${AGENT_READ_CHAPTER_FULL_ENABLED:-false}
+      - AGENT_CURATION_MODEL=${AGENT_CURATION_MODEL:-openai/gpt-5-nano}
+      - AGENT_CURATION_REASONING=${AGENT_CURATION_REASONING:-none}
+      - AGENT_CURATION_TIMEOUT=${AGENT_CURATION_TIMEOUT:-150}
+      - AGENT_CURATION_MAX_TOKENS=${AGENT_CURATION_MAX_TOKENS:-8192}
       - AGENT_MAX_CONTEXT_CHUNKS=${AGENT_MAX_CONTEXT_CHUNKS:-18}
       - REASONING_TRACE_VISIBLE=${REASONING_TRACE_VISIBLE:-false}
       - DEFAULT_SUBJECT=${DEFAULT_SUBJECT:-Machine Learning}

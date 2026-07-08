@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle, Loader2 } from 'lucide-react';
 
-import { API_BASE_URL, API_ENDPOINTS } from '@/config/constants';
+import { API_BASE_URL, API_ENDPOINTS, authHeaders } from '@/config/constants';
 
 const AdminLoginForm = ({ onLogin, isLoading, error }) => (
     <Card className="w-full max-w-md mx-auto mt-20 rounded-2xl shadow-lg border border-primary/30">
@@ -72,7 +72,7 @@ const AdminLayout = ({ children }) => {
 
     const validateSession = async (sessionId) => {
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.validateSession(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.validateSession}`, { headers: authHeaders(sessionId) });
             const data = await response.json();
             if (data.valid) {
                 setSessionId(sessionId);

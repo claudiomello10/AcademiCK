@@ -19,22 +19,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Docling model cache dirs
-ENV HF_HOME=/tmp/huggingface
-ENV TORCH_HOME=/tmp/torch
+# Model/data caches live under /app so they stay readable once the
+# container drops to the non-root user.
+ENV HF_HOME=/app/.cache/huggingface
+ENV TORCH_HOME=/app/.cache/torch
+ENV NLTK_DATA=/app/nltk_data
 
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download NLTK data for text processing
-RUN python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
+# Download NLTK data for text processing. NLTK only picks a dir from
+# NLTK_DATA if it already exists, otherwise it silently falls back to
+# $HOME/nltk_data (root's home at this build stage) -- so create the
+# dir and pass download_dir explicitly, and fail the build if it fails.
+RUN mkdir -p /app/nltk_data && python -c "\
+import nltk, os; \
+d = os.environ['NLTK_DATA']; \
+assert nltk.download('punkt', download_dir=d, raise_on_error=True); \
+assert nltk.download('punkt_tab', download_dir=d, raise_on_error=True)"
 
 # Pre-download Docling layout models to avoid cold-start delay at runtime
 RUN python -c "from docling.document_converter import DocumentConverter; DocumentConverter()" 2>/dev/null || true
 
 # Copy application code
 COPY app/ ./app/
+
+# Run as non-root. /app/processed must exist in the image so the
+# pdf_uploads named volume is seeded with app ownership on first creation.
+RUN groupadd --system --gid 1000 app && useradd --system --uid 1000 --gid app app \
+    && mkdir -p /app/processed \
+    && chown -R app:app /app
+USER app
 
 # Expose port
 EXPOSE 8003

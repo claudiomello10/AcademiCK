@@ -41,7 +41,7 @@ async def health_check(request: Request):
 
     # Check Qdrant
     try:
-        services["qdrant"] = request.app.state.qdrant.health_check()
+        services["qdrant"] = await request.app.state.qdrant.health_check()
     except Exception:
         pass
 

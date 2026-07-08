@@ -25,35 +25,20 @@ from app.services.prompt_engineering import (
     get_enhancement_system_prompt,
 )
 from app.services.reasoning_agent import CurationAgent
-from app.utils.matching import match_book_name
 from redis import asyncio as aioredis
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-class RetrievalQuery(BaseModel):
-    """A single search query generated for retrieval."""
-
-    query: str = Field(description="Declarative textbook-style search query.")
-    book: Optional[str] = Field(
-        default=None,
-        description="Exact book name to target, or null to search all books.",
-    )
-
-
-class EnhancedQueries(BaseModel):
-    """Structured output of the query enhancement agent."""
+class ResolvedQuery(BaseModel):
+    """Structured output of the query resolution agent."""
 
     resolved_query: str = Field(
         description=(
             "Student's question with all pronouns and references resolved "
             "using conversation history. Minimal rewrite — no elaboration."
         )
-    )
-    retrievals: List[RetrievalQuery] = Field(
-        default_factory=list,
-        description="Up to 3 focused search queries to issue.",
     )
 
 
@@ -88,8 +73,7 @@ async def _noop_progress(_: Dict[str, Any]) -> None:
 # verbatim — backend can tweak copy without a frontend ship.
 STAGE_LABELS = {
     "intent": "Entendendo pergunta...",
-    "enhancing": "Gerando consultas de busca...",
-    "searching": "Buscando nos livros...",
+    "enhancing": "Interpretando a pergunta...",
     "generating": "Gerando resposta...",
 }
 
@@ -118,59 +102,36 @@ class RAGOrchestrator:
             redis=redis
         )
 
-    async def _generate_enhanced_queries(
+    async def _resolve_query(
         self,
         query: str,
         subject: str,
         conversation_history: Optional[List[Dict]] = None
-    ) -> Dict[str, Any]:
-        """Generate focused search queries from the user query via a typed agent.
-
-        Returns dict with "retrievals" (list of {"query", "book"}) and
-        "resolved_query" (string with references resolved from history).
-        """
+    ) -> str:
+        """Resolve references in the user query (e.g. "that" -> the actual topic)
+        using conversation history. Retrieval itself is handled by the curation
+        agent's tools, so this only summarizes/resolves the task."""
         try:
-            available_books = await self.qdrant.get_books()
-
             agent = Agent(
                 model=build_model(
                     settings.query_enhancement_model,
                     settings.query_enhancement_reasoning,
                 ),
-                output_type=EnhancedQueries,
-                system_prompt=get_enhancement_system_prompt(subject, available_books),
+                output_type=ResolvedQuery,
+                system_prompt=get_enhancement_system_prompt(subject),
             )
 
             result = await agent.run(
                 query,
                 message_history=_to_pydantic_ai_history(conversation_history),
             )
-            output: EnhancedQueries = result.output
-
-            retrievals = [
-                {
-                    "query": r.query,
-                    "book": match_book_name(r.book, available_books) if r.book else None,
-                }
-                for r in output.retrievals
-            ]
-
-            logger.info(
-                f"Generated {len(retrievals)} enhanced queries:\n"
-                f"Resolved query: '{output.resolved_query}'\n"
-                f"Retrievals: {retrievals}"
-            )
-            return {
-                "retrievals": retrievals or [{"query": query, "book": None}],
-                "resolved_query": output.resolved_query or query,
-            }
+            output: ResolvedQuery = result.output
+            logger.info(f"Resolved query: '{output.resolved_query}'")
+            return output.resolved_query or query
 
         except Exception as e:
-            logger.warning(f"Query enhancement failed, using original query: {e}")
-            return {
-                "retrievals": [{"query": query, "book": None}],
-                "resolved_query": query,
-            }
+            logger.warning(f"Query resolution failed, using original query: {e}")
+            return query
 
     async def process_query(
         self,
@@ -190,13 +151,13 @@ class RAGOrchestrator:
         emit = progress or _noop_progress
         start_time = time.time()
 
-        # Step 1+2: intent and query enhancement run concurrently.
+        # Step 1+2: intent classification and query resolution run concurrently.
         await emit({"type": "status", "stage": "intent", "label": STAGE_LABELS["intent"]})
         intent_task = asyncio.create_task(self.intent_client.classify(query))
 
         await emit({"type": "status", "stage": "enhancing", "label": STAGE_LABELS["enhancing"]})
-        enhanced_queries_task = asyncio.create_task(
-            self._generate_enhanced_queries(query, subject, conversation_history)
+        resolve_task = asyncio.create_task(
+            self._resolve_query(query, subject, conversation_history)
         )
 
         intent_result = await intent_task
@@ -207,42 +168,23 @@ class RAGOrchestrator:
             else settings.top_k_default
         )
 
-        enhancement_result = await enhanced_queries_task
-        enhanced_queries = enhancement_result["retrievals"]
-        resolved_query = enhancement_result["resolved_query"]
+        resolved_query = await resolve_task
 
-        # Step 3: initial search.
-        await emit({
-            "type": "status",
-            "stage": "searching",
-            "label": STAGE_LABELS["searching"],
-            "queries": len(enhanced_queries),
-        })
-        search_results = await self.search_service.search_with_enhanced_queries(
-            queries=enhanced_queries,
-            intent=intent,
-            top_k=top_k,
+        # Step 3: agentic curation. The agent does all retrieval through its
+        # tools (search, list_chapters, ...) and forwards its own status events.
+        agent = CurationAgent(
+            search_service=self.search_service,
+            qdrant=self.qdrant,
         )
-
-        # Step 4: agentic context curation (if enabled). The agent forwards
-        # its own per-iteration status events through the same callback.
-        agent_result = None
-        if settings.agent_enabled and search_results:
-            agent = CurationAgent(
-                search_service=self.search_service,
-                qdrant=self.qdrant,
-            )
-            agent_result = await agent.run(
-                query=resolved_query,
-                intent=intent,
-                subject=subject,
-                initial_chunks=search_results,
-                top_k=top_k,
-                progress=emit,
-            )
-            curated_chunks = agent_result.final_chunks
-        else:
-            curated_chunks = search_results
+        agent_result = await agent.run(
+            query=resolved_query,
+            intent=intent,
+            subject=subject,
+            initial_chunks=[],
+            top_k=top_k,
+            progress=emit,
+        )
+        curated_chunks = agent_result.final_chunks
 
         # Step 5: stream the final answer. Tokens are emitted live so the
         # UI can render the response as it's generated.
@@ -337,15 +279,22 @@ class RAGOrchestrator:
                 }
                 for chunk in curated_chunks
             ],
-            # Full search results with IDs for chunk retrieval tracking (analytics)
-            "search_results": search_results,
+            # Curated chunks with IDs for chunk retrieval tracking (analytics).
+            # Synthetic outline chunks (no real chunk id) are excluded.
+            "search_results": [
+                c for c in curated_chunks if c.get("chunk_id") != "synthetic"
+            ],
             "model_used": model_name,
             "processing_time_ms": processing_time,
-            "agent_iterations": agent_result.iterations_used if agent_result else 0,
-            "agent_tokens": agent_result.total_agent_tokens if agent_result else 0,
-            "agent_searches": agent_result.total_agent_searches if agent_result else 0,
-            "agent_time_ms": agent_result.agent_time_ms if agent_result else 0,
-            "reasoning_trace": agent_result.reasoning_trace if agent_result else [],
+            "agent_actions": agent_result.actions_used,
+            "agent_tool_calls": agent_result.tool_calls,
+            "agent_pool_chunks": agent_result.pool_chunks,
+            "agent_dropped_chunks": agent_result.dropped_chunks,
+            "agent_final_chunks": len(curated_chunks),
+            "agent_not_in_kb": agent_result.not_found,
+            "agent_tokens": agent_result.total_agent_tokens,
+            "agent_time_ms": agent_result.agent_time_ms,
+            "reasoning_trace": agent_result.reasoning_trace,
         }
 
     async def process_single_query(

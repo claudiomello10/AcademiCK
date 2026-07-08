@@ -54,6 +54,16 @@ Response:
 }
 ```
 
+All authenticated endpoints take the session token in the
+`Authorization: Bearer` header — it never appears in URLs, so it can't
+leak via proxy logs, browser history, or `Referer` headers. The examples
+below assume:
+
+```bash
+SESSION={session_id from login}
+ADMIN_SESSION={session_id from admin login}
+```
+
 ### Send a Query
 
 The main chat endpoint streams its response as Server-Sent Events. The
@@ -63,17 +73,19 @@ answer deltas, a final `done` event with the full payload, and `error`
 on failure (no messages are persisted in that case).
 
 ```bash
-curl -N -X POST http://localhost/api/v1/chat/{session_id} \
+curl -N -X POST http://localhost/api/v1/chat \
+  -H "Authorization: Bearer $SESSION" \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{"query": "What is gradient descent?"}'
 ```
 
 For one-shot JSON without conversation history (no streaming), use the
-`/single` endpoint which still returns a single `ChatResponse`:
+`/chat/single` endpoint, which returns a single `ChatResponse`:
 
 ```bash
-curl -X POST http://localhost/api/v1/chat/{session_id}/single \
+curl -X POST http://localhost/api/v1/chat/single \
+  -H "Authorization: Bearer $SESSION" \
   -H "Content-Type: application/json" \
   -d '{"query": "What is gradient descent?"}'
 ```
@@ -81,29 +93,29 @@ curl -X POST http://localhost/api/v1/chat/{session_id}/single \
 ### List Available Books
 
 ```bash
-curl http://localhost/api/v1/books
+curl -H "Authorization: Bearer $SESSION" http://localhost/api/v1/books
 ```
 
 ### Admin Endpoints
 
 ```bash
 # List processing jobs
-curl "http://localhost/api/v1/admin/jobs?session_id={admin_session}"
+curl -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/jobs"
 
 # Get content stats
-curl "http://localhost/api/v1/admin/content-stats?session_id={admin_session}"
+curl -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/content-stats"
 
 # Get book list with chunk counts
-curl "http://localhost/api/v1/admin/book-list?session_id={admin_session}"
+curl -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/book-list"
 
 # Delete a book
-curl -X DELETE "http://localhost/api/v1/admin/books/{book_name}?session_id={admin_session}"
+curl -X DELETE -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/books/{book_name}"
 
 # Dismiss a job from the list
-curl -X DELETE "http://localhost/api/v1/admin/jobs/{job_id}?session_id={admin_session}"
+curl -X DELETE -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/jobs/{job_id}"
 
 # Get usage statistics
-curl "http://localhost/api/v1/admin/usage-stats?range=week&session_id={admin_session}"
+curl -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/usage-stats?range=week"
 ```
 
 ---
@@ -122,13 +134,13 @@ curl "http://localhost/api/v1/admin/usage-stats?range=week&session_id={admin_ses
 
 ```bash
 # Upload and process PDF
-curl -X POST "http://localhost/api/v1/admin/upload-pdfs?session_id={admin_session}" \
+curl -X POST -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/upload-pdfs" \
   -F "files=@your-book.pdf"
 ```
 
 Monitor job status:
 ```bash
-curl "http://localhost/api/v1/admin/jobs?session_id={admin_session}"
+curl -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/jobs"
 ```
 
 ### PDF Processing Methods
@@ -199,24 +211,24 @@ Snapshots are managed through the admin dashboard or the API. Each snapshot incl
 
 ```bash
 # Create snapshot
-curl -X POST "http://localhost/api/v1/admin/snapshots/create?session_id={admin_session}"
+curl -X POST -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/snapshots/create"
 
 # List snapshots
-curl "http://localhost/api/v1/admin/snapshots?session_id={admin_session}"
+curl -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/snapshots"
 
 # Restore snapshot
-curl -X POST "http://localhost/api/v1/admin/snapshots/{snapshot_name}/restore?session_id={admin_session}"
+curl -X POST -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/snapshots/{snapshot_name}/restore"
 
 # Download snapshot file
-curl -O "http://localhost/api/v1/admin/snapshots/{snapshot_name}/download?session_id={admin_session}"
+curl -O -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/snapshots/{snapshot_name}/download"
 
 # Upload external snapshot with metadata
-curl -X POST "http://localhost/api/v1/admin/snapshots/upload?session_id={admin_session}" \
+curl -X POST -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/snapshots/upload" \
   -F "snapshot_file=@your-snapshot.snapshot" \
   -F "metadata_file=@your-snapshot.metadata.json"
 
 # Delete snapshot
-curl -X DELETE "http://localhost/api/v1/admin/snapshots/{snapshot_name}?session_id={admin_session}"
+curl -X DELETE -H "Authorization: Bearer $ADMIN_SESSION" "http://localhost/api/v1/admin/snapshots/{snapshot_name}"
 ```
 
 ---
@@ -262,7 +274,7 @@ full routing rules.
 |----------|---------|-------------|
 | `AVAILABLE_MODELS` | _(required)_ | JSON array of `{provider, value, label}` models offered in the frontend dropdown; each `value` must start with a `provider/` prefix. Served at runtime via `GET /api/v1/models`; validated at startup |
 | `DEFAULT_MODEL_FRONTEND` | _(required)_ | Initially-selected model; must match a `value` in `AVAILABLE_MODELS` |
-| `QUERY_ENHANCEMENT_MODEL` | `openai/gpt-5-nano` | Model for generating focused search queries (runs on every query). Uses structured output — **must support tool calling** |
+| `QUERY_ENHANCEMENT_MODEL` | `openai/gpt-5-nano` | Model for query resolution — rewriting the query with pronouns/references resolved from conversation history (runs on every query). Uses structured output — **must support tool calling** |
 | `LOCAL_LLM_BASE_URL` | `http://host.docker.internal:8000/v1` | OpenAI-compatible base URL for `local/` models (self-hosted server on the same host by default) |
 | `LOCAL_LLM_API_KEY` | `EMPTY` | Token for the local LLM server (most ignore it; the client requires a non-empty value) |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek base URL (override for a proxy/gateway) |
@@ -281,13 +293,15 @@ full routing rules.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_ENABLED` | `true` | Enable the curation agent (disable for single-pass RAG) |
-| `AGENT_MAX_ITERATIONS` | `3` | Maximum curation iterations before forcing approval |
-| `AGENT_CURATION_MODEL` | `openai/gpt-5-nano` | Model for curation evaluation (fast and cheap). Uses structured output — **must support tool calling** |
+| `AGENT_MAX_ACTIONS` | `8` | Single shared budget: every tool call (search or navigation) spends one action, since each call grows the context and cost |
+| `AGENT_MAX_QUERIES_PER_SEARCH` | `3` | Max queries batched into one `search` call |
+| `AGENT_NAV_MAX_ITEMS` | `3` | Max books/chapters per navigation call |
+| `AGENT_READ_CHAPTER_FULL_ENABLED` | `false` | Allow `read_chapter(mode="full")` to return whole chapters (token-heavy) |
+| `AGENT_CURATION_MODEL` | `openai/gpt-5-nano` | Model for curation. **Must support function calling** — the agent does all retrieval through tools |
 | `AGENT_CURATION_REASONING` | `none` | Reasoning effort for the curation agent (`none`, `low`, `medium`, `high`) |
-| `AGENT_CURATION_TIMEOUT` | `60` | Per-iteration timeout (seconds) for the curation model call; on timeout the request fails (SSE `error` event / HTTP 504 on `/single`) |
-| `AGENT_CURATION_MAX_TOKENS` | `4096` | Max response tokens for the curation model (also scales the Anthropic thinking budget) |
-| `AGENT_MAX_CONTEXT_CHUNKS` | `18` | Maximum chunks in the agent's context pool |
+| `AGENT_CURATION_TIMEOUT` | `150` | Overall timeout (seconds) for the curation run (one model round-trip per tool call, so it must cover many rounds); on timeout the request fails (SSE `error` event / HTTP 504 on `/chat/single`) |
+| `AGENT_CURATION_MAX_TOKENS` | `8192` | Max response tokens per curation round; tool-calling reasoning needs headroom (also scales the Anthropic thinking budget) |
+| `AGENT_MAX_CONTEXT_CHUNKS` | `18` | Maximum chunks in the agent's final curated context |
 | `REASONING_TRACE_VISIBLE` | `false` | Expose the agent's reasoning trace in the chat UI as an expandable "ver raciocínio" toggle |
 
 ### Database & Storage

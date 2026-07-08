@@ -12,7 +12,7 @@ import {
     ChevronUp, ChevronDown, CheckCircle2, X, AlertTriangle, StopCircle
 } from 'lucide-react';
 
-import { API_BASE_URL, API_ENDPOINTS } from '@/config/constants';
+import { API_BASE_URL, API_ENDPOINTS, authHeaders } from '@/config/constants';
 
 interface ProcessingJob {
     filename: string;
@@ -90,7 +90,8 @@ const ContentManagement = () => {
 
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.jobs(sessionId)}`
+                `${API_BASE_URL}${API_ENDPOINTS.admin.jobs}`,
+                { headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 const data = await response.json();
@@ -166,7 +167,7 @@ const ContentManagement = () => {
         try {
             if (!sessionId) return;
 
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.contentStats(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.contentStats}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setStats(data);
@@ -180,7 +181,7 @@ const ContentManagement = () => {
         try {
             if (!sessionId) return;
 
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.bookList(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.bookList}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setBooks(data);
@@ -238,8 +239,8 @@ const ContentManagement = () => {
 
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.dismissJob(jobId, sessionId)}`,
-                { method: 'DELETE' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.dismissJob(jobId)}`,
+                { method: 'DELETE', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 setProcessingJobs(prev => prev.filter(j => j.job_id !== jobId));
@@ -253,8 +254,8 @@ const ContentManagement = () => {
         if (!sessionId) return;
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.cancelJob(jobId, sessionId)}`,
-                { method: 'POST' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.cancelJob(jobId)}`,
+                { method: 'POST', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 // Update job status locally while waiting for next poll
@@ -288,8 +289,9 @@ const ContentManagement = () => {
         });
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.uploadPdfs(sessionId)}`, {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.uploadPdfs}`, {
                 method: 'POST',
+                headers: authHeaders(sessionId),
                 body: formData
             });
 
@@ -341,7 +343,7 @@ const ContentManagement = () => {
     const fetchFeatureFlags = async () => {
         if (!sessionId) return;
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.features(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.features}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setFeatureFlags(data);
@@ -355,7 +357,7 @@ const ContentManagement = () => {
         if (!sessionId) return;
         setSnapshotLoading(true);
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.snapshots(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.snapshots}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setSnapshots(data.snapshots);
@@ -373,8 +375,9 @@ const ContentManagement = () => {
         setProcessing(true);
         setError(null);
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.createSnapshot(sessionId)}`, {
-                method: 'POST'
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.createSnapshot}`, {
+                method: 'POST',
+                headers: authHeaders(sessionId)
             });
             if (response.ok) {
                 const data = await response.json();
@@ -397,8 +400,8 @@ const ContentManagement = () => {
         setError(null);
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.restoreSnapshot(snapshotName, sessionId)}`,
-                { method: 'POST' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.restoreSnapshot(snapshotName)}`,
+                { method: 'POST', headers: authHeaders(sessionId) }
             );
 
             if (response.ok) {
@@ -429,8 +432,8 @@ const ContentManagement = () => {
             formData.append('metadata_file', uploadMetadataFile);
 
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.uploadSnapshot(sessionId)}`,
-                { method: 'POST', body: formData }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.uploadSnapshot}`,
+                { method: 'POST', headers: authHeaders(sessionId), body: formData }
             );
 
             if (response.ok) {
@@ -453,16 +456,29 @@ const ContentManagement = () => {
         }
     };
 
+    // Anchor-href downloads can't carry the Authorization header, so fetch
+    // the file as a blob and trigger the download from an object URL.
+    const downloadAsBlob = async (url: string, filename: string) => {
+        const response = await fetch(url, { headers: authHeaders(sessionId!) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blobUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        // Revoking synchronously can cancel a download that hasn't started yet.
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    };
+
     const downloadSnapshot = async (snapshotName: string) => {
         if (!sessionId) return;
         try {
-            const url = `${API_BASE_URL}${API_ENDPOINTS.admin.downloadSnapshot(snapshotName, sessionId)}`;
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = snapshotName;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+            await downloadAsBlob(
+                `${API_BASE_URL}${API_ENDPOINTS.admin.downloadSnapshot(snapshotName)}`,
+                snapshotName
+            );
             setSuccess(`Downloading snapshot: ${snapshotName}`);
         } catch (error) {
             setError('Failed to download snapshot');
@@ -472,13 +488,10 @@ const ContentManagement = () => {
     const downloadMetadata = async (snapshotName: string) => {
         if (!sessionId) return;
         try {
-            const url = `${API_BASE_URL}${API_ENDPOINTS.admin.downloadMetadata(snapshotName, sessionId)}`;
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `${snapshotName}.metadata.json`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+            await downloadAsBlob(
+                `${API_BASE_URL}${API_ENDPOINTS.admin.downloadMetadata(snapshotName)}`,
+                `${snapshotName}.metadata.json`
+            );
             setSuccess(`Downloading metadata for ${snapshotName}`);
         } catch (error) {
             setError('Failed to download metadata');
@@ -490,8 +503,8 @@ const ContentManagement = () => {
 
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.deleteSnapshot(snapshotName, sessionId)}`,
-                { method: 'DELETE' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.deleteSnapshot(snapshotName)}`,
+                { method: 'DELETE', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 setSuccess(`Deleted snapshot: ${snapshotName}`);
@@ -514,8 +527,9 @@ const ContentManagement = () => {
         setSuccess('');
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.deleteBook(bookName, sessionId)}`, {
-                method: 'DELETE'
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.deleteBook(bookName)}`, {
+                method: 'DELETE',
+                headers: authHeaders(sessionId)
             });
 
             const data = await response.json();
@@ -662,7 +676,7 @@ const ContentManagement = () => {
                         <CardDescription>PDF processing progress</CardDescription>
                     </CardHeader>
                     <CardContent>
-                        <div className="space-y-4">
+                        <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
                             {processingJobs.map((job, index) => (
                                 <div key={index} className="space-y-2">
                                     <div className="flex items-center justify-between">
@@ -784,6 +798,8 @@ const ContentManagement = () => {
                                             <div className="flex items-center gap-3">
                                                 {book.processing_status === 'processing' ? (
                                                     <Loader2 className="h-5 w-5 animate-spin text-yellow-500" />
+                                                ) : book.processing_status === 'cancelled' ? (
+                                                    <StopCircle className="h-5 w-5 text-orange-500" />
                                                 ) : (
                                                     <Book className="h-5 w-5" />
                                                 )}
@@ -793,6 +809,11 @@ const ContentManagement = () => {
                                                         {book.processing_status === 'processing' && (
                                                             <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium">
                                                                 Processing...
+                                                            </span>
+                                                        )}
+                                                        {book.processing_status === 'cancelled' && (
+                                                            <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-medium">
+                                                                Cancelled
                                                             </span>
                                                         )}
                                                     </div>

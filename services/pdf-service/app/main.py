@@ -6,7 +6,6 @@ Uses Celery for async processing.
 """
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import io
@@ -30,15 +29,6 @@ app = FastAPI(
     title="AcademiCK PDF Processing Service",
     description="PDF processing and embedding generation",
     version="1.0.0"
-)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 

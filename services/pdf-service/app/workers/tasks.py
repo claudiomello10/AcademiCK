@@ -215,22 +215,33 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
         })
 
         async with pool.acquire() as conn:
-            book_id = str(uuid4())
-            await conn.execute("""
+            book_id = str(await conn.fetchval("""
                 INSERT INTO books (id, name, file_path, processing_status, created_at)
                 VALUES ($1, $2, $3, 'processing', $4)
                 ON CONFLICT (name) DO UPDATE SET
+                    file_path = EXCLUDED.file_path,
                     processing_status = 'processing',
                     updated_at = $4
                 RETURNING id
-            """, book_id, book_name, file_path, datetime.utcnow())
+            """, str(uuid4()), book_name, file_path, datetime.utcnow()))
 
-            # Also get existing book_id if it was updated
-            existing = await conn.fetchval(
-                "SELECT id FROM books WHERE name = $1", book_name
-            )
-            if existing:
-                book_id = str(existing)
+            # Purge any previous content for this book so a re-upload replaces
+            # rather than duplicates. Must happen up front: chapter rows are
+            # inserted incrementally during extraction, so a deferred purge
+            # would collide with them. A failed reprocess leaves the book as
+            # 'failed' with no content — same recovery (re-upload) either way.
+            await conn.execute("DELETE FROM chunks WHERE book_id = $1", book_id)
+            await conn.execute("DELETE FROM chapters WHERE book_id = $1", book_id)
+
+        qdrant.delete(
+            collection_name=settings.qdrant_collection,
+            points_selector=models.Filter(must=[
+                models.FieldCondition(
+                    key="book_name",
+                    match=models.MatchValue(value=book_name),
+                )
+            ]),
+        )
 
         # Try default processing first (LLM-based chapter identification)
         all_chunks = []
@@ -411,11 +422,14 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
 
             dense_embeddings = embeddings_data.get("dense_embeddings", [])
             sparse_embeddings = embeddings_data.get("sparse_embeddings", [])
+            if len(dense_embeddings) != len(batch):
+                raise RuntimeError(
+                    f"Embedding service returned {len(dense_embeddings)} embeddings "
+                    f"for a batch of {len(batch)} chunks — aborting so the book "
+                    f"is not stored partially indexed."
+                )
 
             for j, chunk in enumerate(batch):
-                if j >= len(dense_embeddings):
-                    continue
-
                 chunk_id = str(uuid4())
                 qdrant_point_id = str(uuid4())
 
@@ -440,6 +454,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "topic": chunk.get("topic", ""),
                         "text": chunk["text"],
                         "is_introduction": chunk.get("is_introduction", False),
+                        "chunk_index": chunk.get("chunk_index"),
                         "page_number": chunk.get("page"),
                         "created_at": datetime.utcnow().isoformat()
                     }

@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     session_secret: str = _require_env("SESSION_SECRET")
     session_ttl_minutes: int = int(os.getenv("SESSION_TTL_MINUTES", "30"))
 
+    # Browser origins allowed by CORS, comma-separated. The default matches
+    # the standard deployment where the frontend is served same-origin
+    # behind nginx on port 80.
+    cors_allowed_origins_raw: str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost")
+
     # Config users for testing
     config_users_enabled: bool = os.getenv("CONFIG_USERS_ENABLED", "true").lower() == "true"
     admin_password: str = _require_env("ADMIN_PASSWORD")
@@ -97,6 +102,10 @@ class Settings(BaseSettings):
     top_k_searching: int = int(os.getenv("TOP_K_SEARCHING", "10"))
     top_k_default: int = int(os.getenv("TOP_K_DEFAULT", "6"))
 
+    # Library catalogue cache TTL in seconds. The catalogue is also
+    # invalidated explicitly on ingest/delete; the TTL is the fallback.
+    library_map_cache_ttl: float = float(os.getenv("LIBRARY_MAP_CACHE_TTL", "300"))
+
     # Search weights per intent (dense vs sparse)
     search_weight_qa_dense: float = float(os.getenv("SEARCH_WEIGHT_QA_DENSE", "0.6"))
     search_weight_qa_sparse: float = float(os.getenv("SEARCH_WEIGHT_QA_SPARSE", "0.4"))
@@ -107,13 +116,20 @@ class Settings(BaseSettings):
     search_weight_searching_dense: float = float(os.getenv("SEARCH_WEIGHT_SEARCHING_DENSE", "0.5"))
     search_weight_searching_sparse: float = float(os.getenv("SEARCH_WEIGHT_SEARCHING_SPARSE", "0.5"))
 
-    # Agentic RAG (context curation)
-    agent_enabled: bool = os.getenv("AGENT_ENABLED", "true").lower() == "true"
-    agent_max_iterations: int = int(os.getenv("AGENT_MAX_ITERATIONS", "3"))
+    # Agentic RAG (context curation). The agent owns all retrieval via its tools.
+    # Single shared budget: every tool call (search or navigation) spends one
+    # action, since each call grows the context and makes later calls costlier.
+    agent_max_actions: int = int(os.getenv("AGENT_MAX_ACTIONS", "8"))
+    agent_max_queries_per_search: int = int(os.getenv("AGENT_MAX_QUERIES_PER_SEARCH", "3"))
+    agent_nav_max_items: int = int(os.getenv("AGENT_NAV_MAX_ITEMS", "3"))
+    # Gate read_chapter full-text mode (token-heavy).
+    agent_read_chapter_full_enabled: bool = os.getenv("AGENT_READ_CHAPTER_FULL_ENABLED", "false").lower() == "true"
     agent_curation_model: str = os.getenv("AGENT_CURATION_MODEL", "openai/gpt-5-nano")
     agent_curation_reasoning: str = os.getenv("AGENT_CURATION_REASONING", "none")
-    agent_curation_timeout: float = float(os.getenv("AGENT_CURATION_TIMEOUT", "60"))
-    agent_curation_max_tokens: int = int(os.getenv("AGENT_CURATION_MAX_TOKENS", "4096"))
+    # Whole-run timeout. The agent makes one sequential model round-trip per tool
+    # call, so this must cover up to agent_max_actions rounds.
+    agent_curation_timeout: float = float(os.getenv("AGENT_CURATION_TIMEOUT", "150"))
+    agent_curation_max_tokens: int = int(os.getenv("AGENT_CURATION_MAX_TOKENS", "8192"))
     agent_max_context_chunks: int = int(os.getenv("AGENT_MAX_CONTEXT_CHUNKS", "18"))
     reasoning_trace_visible: bool = os.getenv("REASONING_TRACE_VISIBLE", "false").lower() == "true"
 
@@ -185,3 +201,9 @@ def _parse_frontend_models(raw: str, default: str) -> List[dict]:
 AVAILABLE_MODELS: List[dict] = _parse_frontend_models(
     settings.available_models_raw, settings.default_model_frontend
 )
+
+CORS_ALLOWED_ORIGINS: List[str] = [
+    o.strip() for o in settings.cors_allowed_origins_raw.split(",") if o.strip()
+]
+if not CORS_ALLOWED_ORIGINS:
+    raise RuntimeError("CORS_ALLOWED_ORIGINS must list at least one origin.")

@@ -1,11 +1,13 @@
 """Qdrant Vector Database Client."""
 
+import asyncio
+import time
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Filter, FieldCondition, MatchValue,
-    SparseVector, NamedVector,
+    SparseVector,
     VectorParams, Distance, SparseVectorParams, SparseIndexParams,
     models
 )
@@ -17,20 +19,24 @@ logger = logging.getLogger(__name__)
 class QdrantManager:
     """Manager for Qdrant vector database operations."""
 
-    def __init__(self, host: str, port: int, collection: str):
+    def __init__(self, host: str, port: int, collection: str, catalog_ttl: float):
         self.host = host
         self.port = port
         self.collection = collection
-        self.client = QdrantClient(host=host, port=port, timeout=60)
+        self.client = AsyncQdrantClient(host=host, port=port, timeout=60)
+        self._catalog_ttl = catalog_ttl
+        self._catalog_cache: Optional[Dict[str, Dict[str, List[str]]]] = None
+        self._catalog_cached_at: float = 0.0
+        self._catalog_lock = asyncio.Lock()
 
-    def ensure_collection(self):
+    async def ensure_collection(self):
         """Create the collection if it doesn't exist."""
-        if self.client.collection_exists(self.collection):
+        if await self.client.collection_exists(self.collection):
             logger.info(f"Collection '{self.collection}' already exists")
             return
 
         logger.info(f"Creating collection '{self.collection}'...")
-        self.client.create_collection(
+        await self.client.create_collection(
             collection_name=self.collection,
             vectors_config={
                 "dense": VectorParams(size=1024, distance=Distance.COSINE)
@@ -42,12 +48,12 @@ class QdrantManager:
         )
 
         for field in ["book_name", "chapter_title", "topic"]:
-            self.client.create_payload_index(
+            await self.client.create_payload_index(
                 collection_name=self.collection,
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD
             )
-        self.client.create_payload_index(
+        await self.client.create_payload_index(
             collection_name=self.collection,
             field_name="is_introduction",
             field_schema=models.PayloadSchemaType.BOOL
@@ -71,9 +77,11 @@ class QdrantManager:
             "text": payload.get("text", ""),
             "book_name": payload.get("book_name", ""),
             "chapter_title": payload.get("chapter_title", ""),
+            "chapter_id": payload.get("chapter_id", ""),
             "topic": payload.get("topic", ""),
             "is_introduction": payload.get("is_introduction", False),
             "chunk_id": payload.get("chunk_id", ""),
+            "chunk_index": payload.get("chunk_index"),
             "page_number": payload.get("page_number"),
         }
 
@@ -109,18 +117,18 @@ class QdrantManager:
             query_filter = self._build_book_filter(book_filter)
             oversample = limit * 3
 
-            dense_points = self.client.query_points(
+            dense_points = (await self.client.query_points(
                 collection_name=self.collection,
                 query=dense_vector,
                 using="dense",
                 limit=oversample,
                 query_filter=query_filter,
                 with_payload=True,
-            ).points
+            )).points
 
             sparse_points = []
             if sparse_vector:
-                sparse_points = self.client.query_points(
+                sparse_points = (await self.client.query_points(
                     collection_name=self.collection,
                     query=SparseVector(
                         indices=list(sparse_vector.keys()),
@@ -130,7 +138,7 @@ class QdrantManager:
                     limit=oversample,
                     query_filter=query_filter,
                     with_payload=True,
-                ).points
+                )).points
 
             dense_norm = self._normalize_scores(dense_points)
             sparse_norm = self._normalize_scores(sparse_points)
@@ -162,13 +170,14 @@ class QdrantManager:
         Perform dense-only vector search.
         """
         try:
-            results = self.client.search(
+            results = (await self.client.query_points(
                 collection_name=self.collection,
-                query_vector=NamedVector(name="dense", vector=vector),
+                query=vector,
+                using="dense",
                 limit=limit,
                 query_filter=self._build_book_filter(book_filter),
                 with_payload=True
-            )
+            )).points
             return [self._format_point(point, point.score) for point in results]
 
         except Exception as e:
@@ -177,86 +186,173 @@ class QdrantManager:
 
     async def get_books(self) -> List[str]:
         """Get list of unique book names in the collection."""
-        try:
-            # Scroll through all points to get unique book names
-            books = set()
-            offset = None
-
-            while True:
-                result = self.client.scroll(
-                    collection_name=self.collection,
-                    limit=1000,
-                    offset=offset,
-                    with_payload=["book_name"]
-                )
-
-                points, next_offset = result
-
-                for point in points:
-                    if point.payload and "book_name" in point.payload:
-                        books.add(point.payload["book_name"])
-
-                if next_offset is None:
-                    break
-                offset = next_offset
-
-            return sorted(list(books))
-
-        except Exception as e:
-            logger.error(f"Failed to get books: {e}")
-            return []
+        return sorted((await self.get_library_map()).keys())
 
     async def get_books_with_chapters(self) -> List[Dict[str, Any]]:
         """Get list of books with their chapters from Qdrant payloads."""
+        library_map = await self.get_library_map()
+        return [
+            {
+                "name": book,
+                "chapters": [{"title": ch} for ch in sorted(c for c in chapters if c)],
+            }
+            for book, chapters in sorted(library_map.items())
+        ]
+
+    def invalidate_catalog_cache(self) -> None:
+        """Drop the cached catalogue; next get_library_map re-scans."""
+        self._catalog_cache = None
+
+    async def get_library_map(self) -> Dict[str, Dict[str, List[str]]]:
+        """One-scroll catalogue: book -> chapter -> sorted distinct topics.
+
+        Backs list_chapters, list_topics, and the book listings. Cached with
+        a TTL and invalidated on ingest/delete; the catalogue only changes
+        when content changes, so per-request full scans are wasted work.
+        """
+        async with self._catalog_lock:
+            if (
+                self._catalog_cache is not None
+                and time.monotonic() - self._catalog_cached_at < self._catalog_ttl
+            ):
+                return self._catalog_cache
+
+            try:
+                tree: Dict[str, Dict[str, set]] = {}
+                offset = None
+
+                while True:
+                    points, offset = await self.client.scroll(
+                        collection_name=self.collection,
+                        limit=1000,
+                        offset=offset,
+                        with_payload=["book_name", "chapter_title", "topic"],
+                    )
+
+                    for point in points:
+                        payload = point.payload or {}
+                        book = payload.get("book_name", "")
+                        if not book:
+                            continue
+                        chapter = payload.get("chapter_title", "")
+                        topic = payload.get("topic", "")
+                        chapters = tree.setdefault(book, {})
+                        topics = chapters.setdefault(chapter, set())
+                        if topic:
+                            topics.add(topic)
+
+                    if offset is None:
+                        break
+
+                self._catalog_cache = {
+                    book: {ch: sorted(tps) for ch, tps in chapters.items()}
+                    for book, chapters in tree.items()
+                }
+                self._catalog_cached_at = time.monotonic()
+                return self._catalog_cache
+
+            except Exception as e:
+                logger.error(f"Failed to build library map: {e}")
+                return {}
+
+    async def get_chapter_chunks(
+        self, book_name: str, chapter_title: str, intro_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Fetch a chapter's chunks, ordered, for read_chapter.
+
+        For intro_only, returns the is_introduction chunk(s); when none are
+        tagged (older ingests), falls back to the chapter's first two chunks.
+        """
         try:
-            # Scroll through all points to collect book/chapter info
-            book_chapters: Dict[str, set] = {}
-            offset = None
+            all_chunks = self._sort_chunks(await self._scroll_chapter(book_name, chapter_title))
+            if not intro_only:
+                return all_chunks
 
-            while True:
-                result = self.client.scroll(
-                    collection_name=self.collection,
-                    limit=1000,
-                    offset=offset,
-                    with_payload=["book_name", "chapter_title"]
-                )
-
-                points, next_offset = result
-
-                for point in points:
-                    if point.payload:
-                        book_name = point.payload.get("book_name", "")
-                        chapter_title = point.payload.get("chapter_title", "")
-
-                        if book_name:
-                            if book_name not in book_chapters:
-                                book_chapters[book_name] = set()
-                            if chapter_title:
-                                book_chapters[book_name].add(chapter_title)
-
-                if next_offset is None:
-                    break
-                offset = next_offset
-
-            # Format result
-            books = []
-            for book_name in sorted(book_chapters.keys()):
-                chapters = sorted(list(book_chapters[book_name]))
-                books.append({
-                    "name": book_name,
-                    "chapters": [{"title": ch} for ch in chapters]
-                })
-
-            return books
+            intro = [c for c in all_chunks if c.get("is_introduction")]
+            if intro:
+                return intro
+            return all_chunks[:2]
 
         except Exception as e:
-            logger.error(f"Failed to get books with chapters: {e}")
+            logger.error(f"Failed to get chapter chunks: {e}")
             return []
 
-    def get_collection_info(self) -> Dict[str, Any]:
+    async def _scroll_chapter(self, book_name: str, chapter_title: str) -> List[Dict[str, Any]]:
+        """Scroll all chunks of one chapter."""
+        chunks: List[Dict[str, Any]] = []
+        offset = None
+        while True:
+            points, offset = await self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="book_name", match=MatchValue(value=book_name)),
+                        FieldCondition(key="chapter_title", match=MatchValue(value=chapter_title)),
+                    ]
+                ),
+                limit=1000,
+                offset=offset,
+                with_payload=True,
+            )
+            chunks.extend(self._format_point(p, 1.0) for p in points)
+            if offset is None:
+                break
+        return chunks
+
+    async def get_adjacent_chunks(
+        self, chapter_id: str, chunk_index: Optional[int], window: int = 1
+    ) -> List[Dict[str, Any]]:
+        """Fetch chunks adjacent to a hit within the same chapter, for expand_context.
+
+        Requires chunk_index on the target and its neighbours; chunks missing
+        it are never returned.
+        """
+        if not chapter_id or chunk_index is None:
+            return []
+        try:
+            chunks: List[Dict[str, Any]] = []
+            offset = None
+            while True:
+                points, offset = await self.client.scroll(
+                    collection_name=self.collection,
+                    scroll_filter=Filter(
+                        must=[FieldCondition(key="chapter_id", match=MatchValue(value=chapter_id))]
+                    ),
+                    limit=1000,
+                    offset=offset,
+                    with_payload=True,
+                )
+                chunks.extend(self._format_point(p, 1.0) for p in points)
+                if offset is None:
+                    break
+
+            chunks = self._sort_chunks(chunks)
+
+            lo, hi = chunk_index - window, chunk_index + window
+            return [
+                c for c in chunks
+                if c.get("chunk_index") is not None and lo <= c["chunk_index"] <= hi
+            ]
+
+        except Exception as e:
+            logger.error(f"Failed to get adjacent chunks: {e}")
+            return []
+
+    @staticmethod
+    def _sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Order chunks by chunk_index, then page_number."""
+        return sorted(
+            chunks,
+            key=lambda c: (
+                c.get("chunk_index") if c.get("chunk_index") is not None else 1_000_000,
+                c.get("page_number") if c.get("page_number") is not None else 1_000_000,
+            ),
+        )
+
+    async def get_collection_info(self) -> Dict[str, Any]:
         """Get collection information."""
         try:
-            info = self.client.get_collection(self.collection)
+            info = await self.client.get_collection(self.collection)
             return {
                 "points_count": info.points_count,
                 "vectors_count": info.vectors_count,
@@ -279,7 +375,7 @@ class QdrantManager:
         """
         try:
             # First, count how many points will be deleted
-            count_result = self.client.count(
+            count_result = await self.client.count(
                 collection_name=self.collection,
                 count_filter=Filter(
                     must=[
@@ -296,7 +392,7 @@ class QdrantManager:
                 return 0
 
             # Delete all points matching the book name
-            self.client.delete(
+            await self.client.delete(
                 collection_name=self.collection,
                 points_selector=Filter(
                     must=[
@@ -308,6 +404,7 @@ class QdrantManager:
                 )
             )
 
+            self.invalidate_catalog_cache()
             logger.info(f"Deleted {points_to_delete} points for book: {book_name}")
             return points_to_delete
 
@@ -315,21 +412,21 @@ class QdrantManager:
             logger.error(f"Failed to delete book {book_name}: {e}")
             raise
 
-    def health_check(self) -> bool:
+    async def health_check(self) -> bool:
         """Check if Qdrant is healthy using collection existence check."""
         try:
             # Use collection_exists which is lighter than get_collections
             # and only checks our specific collection
-            return self.client.collection_exists(self.collection)
+            return await self.client.collection_exists(self.collection)
         except Exception:
             return False
 
     # Snapshot Management Methods
 
-    def create_snapshot(self) -> dict:
+    async def create_snapshot(self) -> dict:
         """Create a snapshot of the collection."""
         try:
-            result = self.client.create_snapshot(collection_name=self.collection)
+            result = await self.client.create_snapshot(collection_name=self.collection)
             return {
                 "success": True,
                 "snapshot_name": result.name,
@@ -339,10 +436,10 @@ class QdrantManager:
             logger.error(f"Failed to create snapshot: {e}")
             raise
 
-    def list_snapshots(self) -> list:
+    async def list_snapshots(self) -> list:
         """List all available snapshots."""
         try:
-            snapshots = self.client.list_snapshots(collection_name=self.collection)
+            snapshots = await self.client.list_snapshots(collection_name=self.collection)
             return [
                 {
                     "name": snap.name,
@@ -355,14 +452,14 @@ class QdrantManager:
             logger.error(f"Failed to list snapshots: {e}")
             raise
 
-    def restore_snapshot(self, snapshot_name: str) -> dict:
+    async def restore_snapshot(self, snapshot_name: str) -> dict:
         """Restore collection from a snapshot."""
         try:
             # Qdrant expects a full URL to download the snapshot from
             # We use the snapshot download URL from Qdrant itself
             snapshot_url = f"http://{self.host}:{self.port}/collections/{self.collection}/snapshots/{snapshot_name}"
 
-            self.client.recover_snapshot(
+            await self.client.recover_snapshot(
                 collection_name=self.collection,
                 location=snapshot_url
             )
@@ -374,10 +471,10 @@ class QdrantManager:
             logger.error(f"Failed to restore snapshot: {e}")
             raise
 
-    def delete_snapshot(self, snapshot_name: str) -> dict:
+    async def delete_snapshot(self, snapshot_name: str) -> dict:
         """Delete a snapshot."""
         try:
-            self.client.delete_snapshot(
+            await self.client.delete_snapshot(
                 collection_name=self.collection,
                 snapshot_name=snapshot_name
             )

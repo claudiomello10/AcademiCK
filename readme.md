@@ -21,11 +21,11 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 - **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with intent-tuned weighted score fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
 - **Multi-Provider LLM** — Choose between OpenAI, Anthropic, DeepSeek, or self-hosted local models (vLLM, Ollama, …) per query
-- **Agentic Context Curation** — Multi-iteration agent drops noise and fetches missing context before answer generation
+- **Agentic Context Curation** — A tool-using agent searches and navigates the library under a fixed action budget, dropping noise and pulling in missing context before answer generation
 - **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
 - **Admin Dashboard** — Content management, user management, and usage statistics
-- **Fully Dockerized** — One command to start 11 services with health checks and auto-restart
+- **Fully Dockerized** — One command to start 10 services with health checks and auto-restart
 - **GPU & CPU Support** — GPU-accelerated embeddings with automatic CPU fallback
 
 ## Architecture
@@ -67,27 +67,20 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 
 When a user sends a query, the API Gateway orchestrates the following stages:
 
-1. **Intent classification + Query enhancement** (parallel)
+1. **Intent classification + Query resolution** (parallel)
 
    - A fine-tuned classifier detects query type (Q&A, summarization, coding, search)
-   - A fast LLM generates up to 3 focused search queries and a resolved query (pronouns/references replaced with actual terms from conversation history)
-2. **Hybrid search** with enhanced queries
+   - A fast LLM resolves the query (pronouns/references replaced with actual terms from conversation history)
+2. **Agentic retrieval & context curation**
 
-   - Each query is embedded and matched against textbook chunks in Qdrant
-   - Dense and sparse scores are min-max normalized and fused via an intent-tuned weighted sum
-   - Results are merged and deduplicated across queries
-3. **Agentic context curation** (when `AGENT_ENABLED=true`)
-
-   - A curation agent evaluates retrieved chunks in an iterative loop (up to `AGENT_MAX_ITERATIONS`)
-   - Each iteration: **APPROVE** (context is sufficient) or **REFINE** (drop noise, fetch more via new searches)
-   - The agent never answers — it only curates
-4. **Answer generation** with curated context
+   - A curation agent does all retrieval through tools under a single shared action budget (`AGENT_MAX_ACTIONS`): `search` fetches content and navigation tools (`list_chapters`, `list_topics`, `read_chapter`, `expand_context`) explore the library — every call spends one action, since each grows the context
+   - Hybrid search embeds each query and matches it against Qdrant; dense and sparse scores are min-max normalized and fused via an intent-tuned weighted sum
+   - It finishes with **APPROVE** (keep the curated chunks) or **NOT_IN_KB** — the agent never answers, it only curates
+3. **Answer generation** with curated context
 
    - The main LLM receives curated chunks and generates a citation-backed response, streamed token-by-token
 
-When the curation agent is disabled, the pipeline skips step 3 (single-pass).
-
-All three LLM stages (query enhancement, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat/{session_id}`) streams pipeline progress and answer tokens to the UI as Server-Sent Events; the legacy non-streaming response shape is still available at `/single`.
+All three LLM stages (query resolution, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat`, authenticated via `Authorization: Bearer` header) streams pipeline progress and answer tokens to the UI as Server-Sent Events; a non-streaming variant is available at `/chat/single`.
 
 ## Quick Start
 
@@ -171,7 +164,7 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | `DEFAULT_SUBJECT`           | No           | Academic subject (default: Machine Learning)           |
 | `AVAILABLE_MODELS`          | Yes          | JSON array of models for the frontend dropdown; each `value` needs a `provider/` prefix (`openai/`, `anthropic/`, `deepseek/`, `local/`) |
 | `DEFAULT_MODEL_FRONTEND`    | Yes          | Initially-selected model (a `value` in `AVAILABLE_MODELS`) |
-| `AGENT_ENABLED`             | No           | Enable curation agent (default: true)                  |
+| `AGENT_MAX_ACTIONS`         | No           | Shared tool-call budget for the curation agent (default: 8) |
 | `REASONING_TRACE_VISIBLE`   | No           | Expose the agent's reasoning trace in the chat UI (default: false) |
 | `EMBEDDING_DEVICE`          | No           | Embedding device:`gpu` or `cpu` (default: gpu)     |
 | `CHUNK_SIZE`                | No           | Chunk size in chars for PDF processing (default: 3000) |

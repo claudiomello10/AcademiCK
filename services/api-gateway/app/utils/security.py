@@ -82,7 +82,10 @@ async def authenticate_user(
     """
     # Check config users first
     if settings.config_users_enabled and username in CONFIG_USERS:
-        if password == CONFIG_USERS[username]["password"]:
+        if secrets.compare_digest(
+            password.encode("utf-8"),
+            CONFIG_USERS[username]["password"].encode("utf-8"),
+        ):
             # Fetch the real UUID from the database (created by initialize_config_users)
             async with pool.acquire() as conn:
                 user_id = await conn.fetchval(
