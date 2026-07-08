@@ -205,6 +205,6 @@ async def root():
     return {
         "service": "AcademiCK Intent Classification Service",
         "model": settings.model_name,
-        "version": "1.0.0",
+        "version": "0.2.0-alpha",
         "docs": "/docs"
     }
