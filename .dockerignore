@@ -1,0 +1,8 @@
+# The frontend is the only build that uses the repo root as its context
+# (services/frontend/Dockerfile copies services/frontend/...). Send it only
+# the frontend sources.
+*
+!services/frontend
+services/frontend/node_modules
+services/frontend/.next
+services/frontend/*.tsbuildinfo
