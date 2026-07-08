@@ -189,9 +189,17 @@ Per-action analytics, including agentic-RAG metrics.
 | `tokens_consumed` | int | |
 | `intent` | varchar(100) | |
 | `success` | bool | default true |
-| `agent_iterations` | int | curation-agent loops |
+| `agent_actions` | int | total tool calls the curation agent spent |
+| `agent_search_calls` | int | `search` tool calls |
+| `agent_list_chapters_calls` | int | `list_chapters` tool calls |
+| `agent_list_topics_calls` | int | `list_topics` tool calls |
+| `agent_read_chapter_calls` | int | `read_chapter` tool calls |
+| `agent_expand_context_calls` | int | `expand_context` tool calls |
+| `agent_pool_chunks` | int | chunks gathered into the agent's pool |
+| `agent_dropped_chunks` | int | pool chunks the agent dropped |
+| `agent_final_chunks` | int | chunks handed to the answer model |
+| `agent_not_in_kb` | bool | agent concluded the topic is absent from the library |
 | `agent_tokens` | int | tokens spent by the agent |
-| `agent_searches` | int | extra searches the agent issued |
 | `agent_time_ms` | int | agent wall-clock time |
 | `created_at` | timestamptz | |
 | `metadata` | jsonb | default `{}` |

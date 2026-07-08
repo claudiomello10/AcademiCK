@@ -67,8 +67,8 @@ class ChatResponse(BaseModel):
     model_used: str
     processing_time_ms: float
     # Agentic RAG metadata (agent_tokens and agent_time_ms stay DB-only for admin analytics)
-    agent_iterations: Optional[int] = None
-    agent_searches: Optional[int] = None
+    agent_actions: Optional[int] = None
+    agent_tool_calls: Optional[Dict[str, int]] = None
     reasoning_trace: Optional[List[str]] = None
 
 

@@ -58,8 +58,8 @@ interface Stage {
 interface MessageMetadata {
     sources: number;
     processingMs: number;
-    agentIterations?: number;
-    agentSearches?: number;
+    agentActions?: number;
+    agentToolCalls?: Record<string, number>;
     reasoningTrace?: string[];
 }
 
@@ -77,16 +77,16 @@ const AssistantMessageHeader = ({ metadata }: { metadata: MessageMetadata }) => 
     const [showTrace, setShowTrace] = useState(false);
     const seconds = (metadata.processingMs / 1000).toFixed(1);
     const hasTrace = !!metadata.reasoningTrace && metadata.reasoningTrace.length > 0;
-    const refined = (metadata.agentIterations ?? 0) > 1;
+    const explored = (metadata.agentActions ?? 0) > 1;
     return (
         <div className="mb-2 pb-2 border-b border-primary/20 text-xs text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
-            {refined && (
+            {explored && (
                 <span className="inline-flex items-center gap-1">
                     <RefreshCw className="h-3 w-3" />
-                    Refinado {metadata.agentIterations}×
+                    Explorou a biblioteca {metadata.agentActions}×
                 </span>
             )}
-            {refined && <span aria-hidden>·</span>}
+            {explored && <span aria-hidden>·</span>}
             <span>{metadata.sources} fontes</span>
             <span aria-hidden>·</span>
             <span>{seconds}s</span>
@@ -647,8 +647,8 @@ const StudentHelper = () => {
         sources: unknown[];
         model_used: string;
         processing_time_ms: number;
-        agent_iterations?: number | null;
-        agent_searches?: number | null;
+        agent_actions?: number | null;
+        agent_tool_calls?: Record<string, number> | null;
         reasoning_trace?: string[] | null;
     }
 
@@ -965,8 +965,8 @@ const StudentHelper = () => {
                                 metadata: {
                                     sources: payload.sources?.length ?? 0,
                                     processingMs: payload.processing_time_ms,
-                                    agentIterations: payload.agent_iterations ?? undefined,
-                                    agentSearches: payload.agent_searches ?? undefined,
+                                    agentActions: payload.agent_actions ?? undefined,
+                                    agentToolCalls: payload.agent_tool_calls ?? undefined,
                                     reasoningTrace: payload.reasoning_trace ?? undefined,
                                 },
                             },

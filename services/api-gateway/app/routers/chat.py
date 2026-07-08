@@ -63,9 +63,13 @@ async def track_usage(
     intent: str,
     success: bool = True,
     tokens_consumed: Optional[int] = None,
-    agent_iterations: int = 0,
+    agent_actions: int = 0,
+    agent_tool_calls: Optional[Dict[str, int]] = None,
+    agent_pool_chunks: int = 0,
+    agent_dropped_chunks: int = 0,
+    agent_final_chunks: int = 0,
+    agent_not_in_kb: bool = False,
     agent_tokens: int = 0,
-    agent_searches: int = 0,
     agent_time_ms: int = 0
 ):
     """Insert usage stats into PostgreSQL."""
@@ -79,14 +83,20 @@ async def track_usage(
             logger.debug(f"Skipping usage tracking for non-UUID user_id: {user_id}")
             return
 
+        tools = agent_tool_calls or {}
         async with db_pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO usage_stats
                     (user_id, session_id, action_type, response_time_ms, model_used,
                      intent, success, tokens_consumed,
-                     agent_iterations, agent_tokens, agent_searches, agent_time_ms)
-                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                     agent_actions, agent_search_calls, agent_list_chapters_calls,
+                     agent_list_topics_calls, agent_read_chapter_calls,
+                     agent_expand_context_calls, agent_pool_chunks,
+                     agent_dropped_chunks, agent_final_chunks, agent_not_in_kb,
+                     agent_tokens, agent_time_ms)
+                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                        $12, $13, $14, $15, $16, $17, $18, $19, $20)
                 """,
                 user_id,
                 session_id,
@@ -96,9 +106,17 @@ async def track_usage(
                 intent,
                 success,
                 tokens_consumed,
-                agent_iterations,
+                agent_actions,
+                tools.get("search", 0),
+                tools.get("list_chapters", 0),
+                tools.get("list_topics", 0),
+                tools.get("read_chapter", 0),
+                tools.get("expand_context", 0),
+                agent_pool_chunks,
+                agent_dropped_chunks,
+                agent_final_chunks,
+                agent_not_in_kb,
                 agent_tokens,
-                agent_searches,
                 agent_time_ms
             )
     except Exception as e:
@@ -117,8 +135,8 @@ def _build_chat_response(result: Dict[str, Any]) -> ChatResponse:
         sources=[SourceChunk(**s) for s in result["sources"]],
         model_used=result["model_used"],
         processing_time_ms=result["processing_time_ms"],
-        agent_iterations=result.get("agent_iterations"),
-        agent_searches=result.get("agent_searches"),
+        agent_actions=result.get("agent_actions"),
+        agent_tool_calls=result.get("agent_tool_calls"),
         reasoning_trace=(
             result.get("reasoning_trace")
             if settings.reasoning_trace_visible
@@ -207,9 +225,13 @@ async def chat(
                     model_used=result["model_used"],
                     intent=result["intent"],
                     tokens_consumed=result.get("tokens_used"),
-                    agent_iterations=result.get("agent_iterations", 0),
+                    agent_actions=result.get("agent_actions", 0),
+                    agent_tool_calls=result.get("agent_tool_calls"),
+                    agent_pool_chunks=result.get("agent_pool_chunks", 0),
+                    agent_dropped_chunks=result.get("agent_dropped_chunks", 0),
+                    agent_final_chunks=result.get("agent_final_chunks", 0),
+                    agent_not_in_kb=result.get("agent_not_in_kb", False),
                     agent_tokens=result.get("agent_tokens", 0),
-                    agent_searches=result.get("agent_searches", 0),
                     agent_time_ms=int(result.get("agent_time_ms", 0)),
                 )
 
@@ -278,9 +300,13 @@ async def chat_single(
         model_used=result["model_used"],
         intent=result["intent"],
         tokens_consumed=result.get("tokens_used"),
-        agent_iterations=result.get("agent_iterations", 0),
+        agent_actions=result.get("agent_actions", 0),
+        agent_tool_calls=result.get("agent_tool_calls"),
+        agent_pool_chunks=result.get("agent_pool_chunks", 0),
+        agent_dropped_chunks=result.get("agent_dropped_chunks", 0),
+        agent_final_chunks=result.get("agent_final_chunks", 0),
+        agent_not_in_kb=result.get("agent_not_in_kb", False),
         agent_tokens=result.get("agent_tokens", 0),
-        agent_searches=result.get("agent_searches", 0),
         agent_time_ms=int(result.get("agent_time_ms", 0)),
     )
 
@@ -290,8 +316,8 @@ async def chat_single(
         sources=[SourceChunk(**s) for s in result["sources"]],
         model_used=result["model_used"],
         processing_time_ms=result["processing_time_ms"],
-        agent_iterations=result.get("agent_iterations"),
-        agent_searches=result.get("agent_searches"),
+        agent_actions=result.get("agent_actions"),
+        agent_tool_calls=result.get("agent_tool_calls"),
         reasoning_trace=result.get("reasoning_trace") if settings.reasoning_trace_visible else None,
     )
 

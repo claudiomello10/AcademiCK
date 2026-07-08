@@ -401,16 +401,15 @@ async def get_usage_stats(request: Request, session: dict = Depends(get_admin_se
 async def list_jobs(request: Request, session: dict = Depends(get_admin_session)):
     """List recent processing jobs (admin only).
 
-    Returns jobs from last 12 hours, limited to 10 most recent.
-    Excludes dismissed jobs.
-    Syncs with Celery for in-progress jobs.
+    Returns jobs from the last 12 hours, active (pending/processing) first so
+    a batch upload can't push a running job out of the list — the Celery sync
+    below only covers returned jobs. Excludes dismissed jobs.
     """
     import httpx
     import json as json_lib
 
 
     async with request.app.state.db_pool.acquire() as conn:
-        # Get jobs from last 12 hours, limit to 10, exclude dismissed
         jobs = await conn.fetch("""
             SELECT
                 j.id, j.job_type, j.status, j.progress, j.error_message,
@@ -419,8 +418,8 @@ async def list_jobs(request: Request, session: dict = Depends(get_admin_session)
             LEFT JOIN books b ON j.book_id = b.id
             WHERE j.created_at > NOW() - INTERVAL '12 hours'
               AND (j.metadata->>'dismissed' IS NULL OR j.metadata->>'dismissed' != 'true')
-            ORDER BY j.created_at DESC
-            LIMIT 10
+            ORDER BY (j.status IN ('pending', 'processing')) DESC, j.created_at ASC
+            LIMIT 50
         """)
 
         result = []
@@ -953,14 +952,17 @@ async def cancel_job(request: Request, job_id: str, session: dict = Depends(get_
             WHERE id = $1
         """, job_id)
 
-        # Also update the book status if it exists
-        book_id = metadata.get("book_id")
-        if book_id:
+        # The worker creates the book row (named after the file) when the task
+        # starts; cancelling mid-run would otherwise leave it stuck in
+        # 'processing'. Jobs carry no book_id, so resolve the book by name.
+        filename = metadata.get("filename")
+        if filename:
+            import os
             await conn.execute("""
                 UPDATE books
                 SET processing_status = 'cancelled', updated_at = NOW()
-                WHERE id = $1
-            """, book_id)
+                WHERE name = $1 AND processing_status = 'processing'
+            """, os.path.splitext(filename)[0])
 
     return {"success": True, "message": "Job cancelled"}
 

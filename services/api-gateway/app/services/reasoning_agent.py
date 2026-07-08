@@ -54,10 +54,12 @@ class AgentResult:
     """Result returned to the orchestrator."""
 
     final_chunks: List[Dict]
-    iterations_used: int
+    actions_used: int
+    tool_calls: Dict[str, int]
+    pool_chunks: int
+    dropped_chunks: int
     reasoning_trace: List[str]
     total_agent_tokens: int
-    total_agent_searches: int
     agent_time_ms: float
     not_found: bool = False
 
@@ -497,13 +499,15 @@ class CurationAgent:
         except CurationTimeoutError:
             raise
         except Exception as e:
-            logger.error(f"CurationAgent failed, falling back to single-pass: {e}")
+            logger.error(f"CurationAgent failed, serving initial chunks as-is: {e}")
             return AgentResult(
                 final_chunks=initial_chunks,
-                iterations_used=0,
+                actions_used=0,
+                tool_calls={},
+                pool_chunks=len(initial_chunks),
+                dropped_chunks=0,
                 reasoning_trace=[f"Agent error: {e}"],
                 total_agent_tokens=0,
-                total_agent_searches=0,
                 agent_time_ms=0.0,
             )
 
@@ -568,7 +572,6 @@ class CurationAgent:
         decision: KeepDecision = result.output
         usage = result.usage
         total_tokens = (usage.total_tokens or 0) if usage else 0
-        searches = deps.counters.get("search", 0)
         reasoning_trace = list(deps.reasoning_trace)
         reasoning_trace.append(f"{decision.action}: {decision.reasoning}")
 
@@ -583,10 +586,12 @@ class CurationAgent:
         if decision.action == "NOT_IN_KB":
             return AgentResult(
                 final_chunks=[],
-                iterations_used=searches,
+                actions_used=deps.total_tool_calls,
+                tool_calls=dict(deps.counters),
+                pool_chunks=len(deps.context_pool),
+                dropped_chunks=len(deps.dropped),
                 reasoning_trace=reasoning_trace,
                 total_agent_tokens=total_tokens,
-                total_agent_searches=searches,
                 agent_time_ms=(time.time() - agent_start) * 1000,
                 not_found=True,
             )
@@ -607,9 +612,11 @@ class CurationAgent:
 
         return AgentResult(
             final_chunks=final_chunks,
-            iterations_used=searches,
+            actions_used=deps.total_tool_calls,
+            tool_calls=dict(deps.counters),
+            pool_chunks=len(deps.context_pool),
+            dropped_chunks=len(deps.dropped),
             reasoning_trace=reasoning_trace,
             total_agent_tokens=total_tokens,
-            total_agent_searches=searches,
             agent_time_ms=(time.time() - agent_start) * 1000,
         )
