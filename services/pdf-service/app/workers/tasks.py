@@ -251,7 +251,6 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
         try:
             from app.services.default_pdf_processor import DefaultPDFProcessor
 
-            # Raises when the chapter-detection model's provider key is missing.
             default_processor = DefaultPDFProcessor()
 
             task.update_state(state="PROCESSING", meta={

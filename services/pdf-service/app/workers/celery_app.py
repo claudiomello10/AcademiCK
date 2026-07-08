@@ -2,6 +2,11 @@
 
 from celery import Celery
 from app.config import settings
+from app.services.llm_client import build_chat_client
+
+# Fail at launch when the chapter-detection model's provider credentials are
+# missing, instead of silently falling back to Docling on every job.
+build_chat_client(settings.pdf_chapter_detection_model)
 
 celery_app = Celery(
     "pdf_processor",
