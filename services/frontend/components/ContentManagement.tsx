@@ -34,6 +34,8 @@ interface BookInfo {
     processing_method?: string;
 }
 
+type SnapshotOp = 'restore' | 'delete' | 'download' | 'metadata';
+
 interface ExpandedState {
     [key: string]: boolean;
 }
@@ -63,7 +65,7 @@ const ContentManagement = () => {
     const [snapshotToDelete, setSnapshotToDelete] = useState<string | null>(null);
     const [snapshotError, setSnapshotError] = useState<string | null>(null);
     const [snapshotSuccess, setSnapshotSuccess] = useState('');
-    const [snapshotBusy, setSnapshotBusy] = useState<{ name: string; op: 'restore' | 'delete' | 'download' | 'metadata' } | null>(null);
+    const [snapshotBusy, setSnapshotBusy] = useState<{ name: string; op: SnapshotOp } | null>(null);
     const [showUploadDialog, setShowUploadDialog] = useState(false);
     const [uploadSnapshotFile, setUploadSnapshotFile] = useState<File | null>(null);
     const [uploadMetadataFile, setUploadMetadataFile] = useState<File | null>(null);
@@ -356,7 +358,7 @@ const ContentManagement = () => {
         }
     };
 
-    const snapshotIsBusy = (name: string, op: string) =>
+    const snapshotIsBusy = (name: string, op: SnapshotOp) =>
         snapshotBusy?.name === name && snapshotBusy?.op === op;
 
     const fetchSnapshots = async () => {
@@ -367,6 +369,7 @@ const ContentManagement = () => {
             if (response.ok) {
                 const data = await response.json();
                 setSnapshots(data.snapshots);
+                setSnapshotError(null);
             } else {
                 const err = await response.json().catch(() => ({}));
                 throw new Error(err.detail || `Failed to load snapshots (HTTP ${response.status})`);
