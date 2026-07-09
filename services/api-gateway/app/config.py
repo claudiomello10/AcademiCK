@@ -13,7 +13,7 @@ When running standalone, export them in your shell before starting the service.
 
 import json
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 
 
@@ -146,8 +146,7 @@ class Settings(BaseSettings):
     # Snapshot storage directory (shared volume with Qdrant)
     snapshot_dir: str = os.getenv("SNAPSHOT_DIR", "/app/snapshots")
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings()

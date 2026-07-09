@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import ModelMessage, ToolReturnPart
 
 from app.config import settings
@@ -543,7 +544,7 @@ class CurationAgent:
             output_type=KeepDecision,
             system_prompt=get_curation_system_prompt(subject, list(library_map.keys())),
             tools=[search, list_chapters, list_topics, read_chapter, expand_context],
-            history_processors=[_make_history_processor(deps)],
+            capabilities=[ProcessHistory(_make_history_processor(deps))],
         )
 
         user_prompt = get_curation_user_prompt(query=query, context_chunks=deps.context_pool)
