@@ -21,17 +21,19 @@ def _require_model(model: str, reasoning: str):
         pytest.skip(f"model '{model}' not configured: {e}")
 
 
-async def test_real_llm_chat_pipeline(client, guest_token, seed_book, fake_ml):
+async def test_real_llm_chat_pipeline(client, guest_token, seed_book):
     _require_model(settings.agent_curation_model, settings.agent_curation_reasoning)
     _require_model(settings.query_enhancement_model, settings.query_enhancement_reasoning)
 
-    await seed_book()
+    book = await seed_book()
     r = await client.post(
         "/api/v1/chat/single",
-        json={"query": "Explain how neural networks learn from data."},
+        json={"query": "What is the Zorbite consolidation algorithm and what does it do?"},
         headers=auth(guest_token),
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["response"]
-    assert body["intent"]
+    # Sources prove the real agent actually searched and approved the seeded
+    # book rather than serving the no-context fallback.
+    assert book["name"] in {s["book"] for s in body["sources"]}

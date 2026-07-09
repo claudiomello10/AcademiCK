@@ -1,9 +1,10 @@
 """Chat / RAG pipeline behavior: real routes, real Qdrant, faked LLM and ML."""
 
 import json
+import uuid
 from uuid import UUID
 
-from tests.conftest import auth
+from tests.conftest import BOOK_TOPICS, auth
 
 
 def parse_sse(text: str) -> list:
@@ -22,31 +23,32 @@ def parse_sse(text: str) -> list:
 
 
 async def test_chat_single_cites_seeded_book(
-    client, guest_token, seed_book, fake_ml, fake_llm
+    client, guest_token, seed_book, fake_llm
 ):
     book = await seed_book()
     r = await client.post(
         "/api/v1/chat/single",
-        json={"query": "How do neural networks learn?"},
+        json={"query": BOOK_TOPICS[0]["question"]},
         headers=auth(guest_token),
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["response"]
     assert body["sources"]
-    assert body["sources"][0]["book"] == book["name"]
+    assert book["name"] in {s["book"] for s in body["sources"]}
 
 
 async def test_chat_book_filter_only_cites_that_book(
-    client, guest_token, seed_book, fake_ml, fake_llm
+    client, guest_token, seed_book, fake_llm
 ):
-    await seed_book(direction=0)
-    book_b = await seed_book(direction=1)
+    await seed_book(topic=0)
+    book_b = await seed_book(topic=1)
     fake_llm["book"] = book_b["name"]
+    fake_llm["query"] = f"{BOOK_TOPICS[1]['question']} ({uuid.uuid4().hex[:8]})"
 
     r = await client.post(
         "/api/v1/chat/single",
-        json={"query": "How do neural networks learn?"},
+        json={"query": BOOK_TOPICS[1]["question"]},
         headers=auth(guest_token),
     )
     assert r.status_code == 200, r.text
@@ -56,7 +58,7 @@ async def test_chat_book_filter_only_cites_that_book(
 
 
 async def test_chat_not_in_kb_returns_answer_without_sources(
-    client, guest_token, fake_ml, fake_llm
+    client, guest_token, fake_llm
 ):
     fake_llm["decision"] = "NOT_IN_KB"
     r = await client.post(
@@ -71,12 +73,12 @@ async def test_chat_not_in_kb_returns_answer_without_sources(
 
 
 async def test_chat_stream_emits_done_and_persists_history(
-    client, guest_token, seed_book, fake_ml, fake_llm
+    client, guest_token, seed_book, fake_llm
 ):
     book = await seed_book()
     r = await client.post(
         "/api/v1/chat",
-        json={"query": "How do neural networks learn?"},
+        json={"query": BOOK_TOPICS[0]["question"]},
         headers=auth(guest_token),
     )
     assert r.status_code == 200
@@ -96,7 +98,7 @@ async def test_chat_stream_emits_done_and_persists_history(
 
 
 async def test_chat_rejects_when_conversation_full(
-    app, client, guest_token, fake_ml, fake_llm
+    app, client, guest_token, fake_llm
 ):
     session = await app.state.session_service.get_session(guest_token)
     async with app.state.db_pool.acquire() as conn:

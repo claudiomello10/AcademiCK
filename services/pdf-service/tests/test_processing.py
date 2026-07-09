@@ -9,7 +9,7 @@ from tests.conftest import book_counts
 
 
 async def test_processing_stores_chapters_chunks_and_vectors(
-    synthetic_pdf, book_name, task_stub, stub_chapter_llm, block_docling, fake_embedding
+    synthetic_pdf, book_name, task_stub, stub_chapter_llm, block_docling
 ):
     result = await _process_pdf_async(task_stub, synthetic_pdf, book_name)
 
@@ -27,7 +27,7 @@ async def test_processing_stores_chapters_chunks_and_vectors(
 
 
 async def test_reprocessing_replaces_content_without_duplicates(
-    synthetic_pdf, book_name, task_stub, stub_chapter_llm, block_docling, fake_embedding
+    synthetic_pdf, book_name, task_stub, stub_chapter_llm, block_docling
 ):
     first = await _process_pdf_async(task_stub, synthetic_pdf, book_name)
     first_counts = await book_counts(book_name)
@@ -41,7 +41,7 @@ async def test_reprocessing_replaces_content_without_duplicates(
 
 
 async def test_failure_of_all_methods_marks_book_failed(
-    synthetic_pdf, book_name, task_stub, block_docling, fake_embedding, monkeypatch
+    synthetic_pdf, book_name, task_stub, block_docling, monkeypatch
 ):
     from app.services.default_pdf_processor import DefaultPDFProcessor
 

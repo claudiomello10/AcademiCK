@@ -46,9 +46,11 @@ container_ip() {
 PG_IP="$(container_ip academick-postgres)"
 REDIS_IP="$(container_ip academick-redis)"
 QDRANT_IP="$(container_ip academick-qdrant)"
-if [ -z "$PG_IP" ] || [ -z "$REDIS_IP" ] || [ -z "$QDRANT_IP" ]; then
-  echo "error: dev stack not running (postgres/redis/qdrant containers not found)." >&2
-  echo "start it with: docker compose up -d postgres redis qdrant" >&2
+EMBEDDING_IP="$(container_ip academick-embedding)"
+INTENT_IP="$(container_ip academick-intent)"
+if [ -z "$PG_IP" ] || [ -z "$REDIS_IP" ] || [ -z "$QDRANT_IP" ] || [ -z "$EMBEDDING_IP" ] || [ -z "$INTENT_IP" ]; then
+  echo "error: dev stack not running (postgres/redis/qdrant/embedding/intent containers not found)." >&2
+  echo "start it with: docker compose up -d postgres redis qdrant embedding-service intent-service" >&2
   exit 1
 fi
 
@@ -56,6 +58,8 @@ export DATABASE_URL="postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWOR
 export REDIS_URL="redis://:${REDIS_PASSWORD}@${REDIS_IP}:6379/0"
 export QDRANT_HOST="$QDRANT_IP"
 export QDRANT_PORT=6333
+export EMBEDDING_SERVICE_URL="http://${EMBEDDING_IP}:8002"
+export INTENT_SERVICE_URL="http://${INTENT_IP}:8001"
 
 MARKER_ARGS=()
 if [ "$RUN_LLM" -eq 1 ]; then

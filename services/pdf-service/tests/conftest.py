@@ -1,4 +1,4 @@
-"""Shared fixtures: real Postgres/Redis/Qdrant, faked chapter LLM and embedder.
+"""Shared fixtures: real Postgres/Redis/Qdrant/embedder, faked chapter LLM.
 
 The env check runs before any `app.*` import: config requires DATABASE_URL and
 REDIS_URL at import time, and the celery app validates the chapter-detection
@@ -6,13 +6,11 @@ provider credentials on import. scripts/run-tests.sh derives everything from
 the running dev stack; CI sets it for its service containers.
 """
 
-import hashlib
-import json
 import os
 import sys
 import uuid
 
-_REQUIRED_ENV = ("DATABASE_URL", "REDIS_URL", "QDRANT_HOST")
+_REQUIRED_ENV = ("DATABASE_URL", "REDIS_URL", "QDRANT_HOST", "EMBEDDING_SERVICE_URL")
 _missing = [name for name in _REQUIRED_ENV if not os.getenv(name)]
 if _missing:
     raise RuntimeError(
@@ -21,15 +19,11 @@ if _missing:
     )
 
 import asyncpg
-import httpx
 import pytest
-import respx
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from app.config import settings
-
-DENSE_DIM = 1024
 
 # Long sentences keep the period density far below the 2% skip threshold.
 _SENTENCES = [
@@ -90,42 +84,6 @@ def stub_chapter_llm(monkeypatch):
 def block_docling(monkeypatch):
     """Keep the docling fallback from importing (it downloads models)."""
     monkeypatch.setitem(sys.modules, "app.services.docling_pdf_processor", None)
-
-
-@pytest.fixture
-def fake_embedding():
-    """Stub the embedding service at the wire; Qdrant HTTP passes through."""
-
-    def _vec(text: str) -> list:
-        vec = [0.0] * DENSE_DIM
-        vec[int(hashlib.md5(text.encode()).hexdigest(), 16) % DENSE_DIM] = 1.0
-        return vec
-
-    def _embed(request: httpx.Request) -> httpx.Response:
-        texts = json.loads(request.content)["texts"]
-        return httpx.Response(
-            200,
-            json={
-                "dense_embeddings": [_vec(t) for t in texts],
-                "sparse_embeddings": [{"1": 1.0} for _ in texts],
-            },
-        )
-
-    passthrough_hosts = {settings.qdrant_host, "api.openai.com"}
-    for base_url in (
-        settings.anthropic_base_url,
-        settings.deepseek_base_url,
-        settings.local_llm_base_url,
-    ):
-        if base_url:
-            passthrough_hosts.add(httpx.URL(base_url).host)
-
-    with respx.mock(assert_all_called=False) as router:
-        # Qdrant speaks HTTP, and llm-marked tests reach real providers.
-        for host in passthrough_hosts:
-            router.route(host=host).pass_through()
-        router.post(f"{settings.embedding_service_url}/embed").mock(side_effect=_embed)
-        yield router
 
 
 class TaskStub:

@@ -5,7 +5,6 @@ before any `app.*` import. scripts/run-tests.sh derives these variables from
 the running dev stack; CI sets them for its service containers.
 """
 
-import json
 import os
 import uuid
 
@@ -13,6 +12,8 @@ _REQUIRED_ENV = (
     "DATABASE_URL",
     "REDIS_URL",
     "QDRANT_HOST",
+    "EMBEDDING_SERVICE_URL",
+    "INTENT_SERVICE_URL",
     "SESSION_SECRET",
     "ADMIN_PASSWORD",
     "GUEST_PASSWORD",
@@ -28,7 +29,6 @@ if _missing:
 
 import httpx
 import pytest
-import respx
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport
 from qdrant_client.models import PointStruct, SparseVector
@@ -36,16 +36,51 @@ from qdrant_client.models import PointStruct, SparseVector
 from app.config import settings
 from app.main import app as fastapi_app
 
-DENSE_DIM = 1024
-# Sparse term ids: the embed stub and book seeds with direction 0 share id 7,
-# so seeded chunks win both the dense and the sparse leg of hybrid search.
-SPARSE_IDX_BY_DIRECTION = {0: 7, 1: 8}
+# Seeded books use real embeddings of fictional topics, so retrieval quality
+# assertions stay coarse ("the book is cited"), never rank- or score-exact.
+BOOK_TOPICS = {
+    0: {
+        "topic": "Zorbite Consolidation",
+        "question": "What is the Zorbite consolidation algorithm and what does it do?",
+        "chunks": [
+            "The Zorbite consolidation algorithm merges overlapping evidence "
+            "fragments into a single ranked ledger while preserving the "
+            "provenance of every fragment it absorbs.",
+            "Because the Zorbite consolidation algorithm compacts its ledger "
+            "after every merge, repeated runs produce identical output, which "
+            "makes downstream audits straightforward.",
+            "Students remember the Zorbite consolidation algorithm because it "
+            "trades a small amount of recall for a large improvement in the "
+            "precision of the final ledger.",
+        ],
+    },
+    1: {
+        "topic": "Quillmark Indexing",
+        "question": "How does the Quillmark indexing ritual organize manuscripts?",
+        "chunks": [
+            "The Quillmark indexing ritual assigns every manuscript a "
+            "three-part sigil derived from its opening sentence, its scribe, "
+            "and the season of its binding.",
+            "Archivists performed the Quillmark indexing ritual at dusk "
+            "because candle smoke was believed to fix the sigil ink "
+            "permanently into the catalogue page.",
+            "Modern libraries simulate the Quillmark indexing ritual in "
+            "software, keeping the sigil scheme while discarding the candles "
+            "and the dusk requirement.",
+        ],
+    },
+}
 
 
-def unit_vec(direction: int) -> list:
-    vec = [0.0] * DENSE_DIM
-    vec[direction] = 1.0
-    return vec
+async def embed_texts(texts: list) -> dict:
+    """Embed through the real embedding service (GPU locally, CPU in CI)."""
+    async with httpx.AsyncClient(timeout=300.0) as c:
+        r = await c.post(
+            f"{settings.embedding_service_url}/embed",
+            json={"texts": texts, "return_sparse": True},
+        )
+        r.raise_for_status()
+        return r.json()
 
 
 def auth(token: str) -> dict:
@@ -101,17 +136,18 @@ async def guest_token(client):
 async def seed_book(app):
     """Factory that seeds a uniquely-named book into Postgres and Qdrant.
 
-    Chunks carry a synthetic dense unit vector along `direction`, so the embed
-    stub (which returns direction 0) makes direction-0 books the top hits.
+    Chunks are real bge-m3 embeddings of a fictional topic (see BOOK_TOPICS),
+    so semantically matching queries retrieve them without any vector faking.
     Everything created is torn down afterwards.
     """
     created = []
 
-    async def _seed(direction: int = 0, n_chunks: int = 3) -> dict:
+    async def _seed(topic: int = 0) -> dict:
+        spec = BOOK_TOPICS[topic]
+        n_chunks = len(spec["chunks"])
         name = f"test-book-{uuid.uuid4().hex[:8]}"
         book_id = str(uuid.uuid4())
         chapter_id = str(uuid.uuid4())
-        sparse_idx = SPARSE_IDX_BY_DIRECTION[direction]
 
         async with app.state.db_pool.acquire() as conn:
             await conn.execute(
@@ -129,29 +165,31 @@ async def seed_book(app):
                 chapter_id, book_id, n_chunks,
             )
 
+        embeddings = await embed_texts(spec["chunks"])
         points = []
         async with app.state.db_pool.acquire() as conn:
-            for i in range(n_chunks):
+            for i, text in enumerate(spec["chunks"]):
                 chunk_id = str(uuid.uuid4())
                 point_id = str(uuid.uuid4())
-                text = (
-                    f"Test content {i} of {name}: neural networks learn layered "
-                    f"representations of data through gradient descent."
-                )
                 await conn.execute(
                     """
                     INSERT INTO chunks (id, book_id, chapter_id, qdrant_point_id,
                                         text, topic, chunk_index, char_count)
-                    VALUES ($1, $2, $3, $4, $5, 'Neural Networks', $6, $7)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
-                    chunk_id, book_id, chapter_id, point_id, text, i, len(text),
+                    chunk_id, book_id, chapter_id, point_id, text,
+                    spec["topic"], i, len(text),
                 )
+                sparse = embeddings["sparse_embeddings"][i]
                 points.append(
                     PointStruct(
                         id=point_id,
                         vector={
-                            "dense": unit_vec(direction),
-                            "sparse": SparseVector(indices=[sparse_idx], values=[1.0]),
+                            "dense": embeddings["dense_embeddings"][i],
+                            "sparse": SparseVector(
+                                indices=[int(k) for k in sparse.keys()],
+                                values=[float(v) for v in sparse.values()],
+                            ),
                         },
                         payload={
                             "chunk_id": chunk_id,
@@ -159,7 +197,7 @@ async def seed_book(app):
                             "book_name": name,
                             "chapter_id": chapter_id,
                             "chapter_title": "Chapter One",
-                            "topic": "Neural Networks",
+                            "topic": spec["topic"],
                             "text": text,
                             "is_introduction": i == 0,
                             "chunk_index": i,
@@ -190,34 +228,11 @@ async def seed_book(app):
         async with app.state.db_pool.acquire() as conn:
             await conn.execute("DELETE FROM books WHERE name = $1", name)
     app.state.qdrant.invalidate_catalog_cache()
-
-
-@pytest.fixture
-def fake_ml(app):
-    """Stub the embedding and intent HTTP services at the wire with respx.
-
-    Qdrant also speaks HTTP, so its host is passed through untouched.
-    """
-
-    def _embed(request: httpx.Request) -> httpx.Response:
-        texts = json.loads(request.content)["texts"]
-        return httpx.Response(
-            200,
-            json={
-                "dense_embeddings": [unit_vec(0)] * len(texts),
-                "sparse_embeddings": [{"7": 1.0}] * len(texts),
-            },
-        )
-
-    with respx.mock(assert_all_called=False) as router:
-        router.route(host=settings.qdrant_host).pass_through()
-        router.post(f"{settings.embedding_service_url}/embed").mock(side_effect=_embed)
-        router.post(f"{settings.intent_service_url}/classify").mock(
-            return_value=httpx.Response(
-                200, json={"intent": "question_answering", "confidence": 0.99}
-            )
-        )
-        yield router
+    # Cached search results may cite the books just deleted.
+    if created:
+        cache_keys = await app.state.redis.keys("search:*")
+        if cache_keys:
+            await app.state.redis.delete(*cache_keys)
 
 
 @pytest.fixture
@@ -239,9 +254,9 @@ def fake_llm(monkeypatch):
     state = {
         "book": None,
         "decision": "APPROVE",
-        # Unique query text per test: search results are cached in the shared
+        # Unique suffix per test: search results are cached in the shared
         # dev Redis under a hash of the query, so reuse would serve stale books.
-        "query": f"neural networks {uuid.uuid4().hex[:8]}",
+        "query": f"{BOOK_TOPICS[0]['question']} ({uuid.uuid4().hex[:8]})",
     }
 
     def curation_fn(messages, info):

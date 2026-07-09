@@ -31,7 +31,7 @@ async def test_real_chapter_detection_reads_toc(synthetic_pdf):
 
 
 async def test_full_pipeline_with_real_chapter_detection(
-    synthetic_pdf, book_name, task_stub, block_docling, fake_embedding
+    synthetic_pdf, book_name, task_stub, block_docling
 ):
     _require_chapter_model()
     from app.workers.tasks import _process_pdf_async
