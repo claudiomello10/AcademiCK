@@ -120,6 +120,7 @@ cover.
 | Test | Verifies |
 |---|---|
 | `test_snapshot_roundtrip_restores_deleted_book` | create snapshot → delete a seeded book everywhere → restore → **every Qdrant point (id + payload), the collection total, and the books/chapters rows are byte-identical** to before, and the book is listed again |
+| `test_failed_metadata_write_leaves_no_orphan` | when the metadata write fails (unwritable `SNAPSHOT_DIR`), create returns an actionable 500 and the snapshot is discarded — never orphaned/unrestorable |
 | `test_restore_without_metadata_is_rejected` | restoring an unknown snapshot → 400, never a blind restore |
 | `test_snapshot_endpoints_require_admin` | guest on snapshot endpoints → 403 |
 
@@ -209,6 +210,8 @@ afterwards.
 | `test_query_answers_from_uploaded_book` | a chat query about the book's content returns an answer citing it |
 | `test_reupload_replaces_instead_of_duplicating` | uploading the same PDF again leaves chunk/chapter counts unchanged |
 | `test_guest_cannot_upload` | guest on `/admin/upload-pdfs` → 403 |
+| `test_snapshot_create_list_delete_in_container` | snapshot create/list/delete through the **real gateway container** — catches filesystem/permission regressions on the metadata volume that in-process tests can't see |
+| `test_guest_cannot_manage_snapshots` | guest on snapshot create → 403 |
 
 Override `E2E_BASE_URL` / `E2E_PROCESS_TIMEOUT` (default 300 s) if needed.
 

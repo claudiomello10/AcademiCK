@@ -128,6 +128,32 @@ async def test_snapshot_roundtrip_restores_deleted_book(
     assert snapshot not in {s["name"] for s in r.json()["snapshots"]}
 
 
+async def test_failed_metadata_write_leaves_no_orphan(
+    client, admin_token, monkeypatch, tmp_path
+):
+    """A snapshot without metadata can't be restored, so when the metadata
+    write fails the snapshot must be discarded, not left orphaned."""
+    readonly = tmp_path / "readonly"
+    readonly.mkdir()
+    readonly.chmod(0o500)
+    monkeypatch.setattr(settings, "snapshot_dir", str(readonly))
+
+    r = await client.get("/api/v1/admin/snapshots", headers=auth(admin_token))
+    before = {s["name"] for s in r.json()["snapshots"]}
+
+    try:
+        r = await client.post(
+            "/api/v1/admin/snapshots/create", headers=auth(admin_token)
+        )
+        assert r.status_code == 500
+        assert "metadata could not be written" in r.json()["detail"]
+
+        r = await client.get("/api/v1/admin/snapshots", headers=auth(admin_token))
+        assert {s["name"] for s in r.json()["snapshots"]} == before
+    finally:
+        readonly.chmod(0o700)
+
+
 async def test_restore_without_metadata_is_rejected(client, admin_token):
     r = await client.post(
         "/api/v1/admin/snapshots/no-such-snapshot-xyz/restore",

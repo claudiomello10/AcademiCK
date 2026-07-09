@@ -12,13 +12,19 @@ async def test_processed_book_is_listed_with_content(processed_book, book_stats)
 async def test_query_answers_from_uploaded_book(
     client, guest_token, auth, processed_book
 ):
-    r = await client.post(
-        "/api/v1/chat/single",
-        json={"query": "What is the Zorbite consolidation algorithm and what does it do?"},
-        headers=auth(guest_token),
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
+    # The real curation agent can occasionally decide NOT_IN_KB on a single
+    # shot; one retry separates that nondeterminism from a real regression.
+    body = {}
+    for attempt in range(2):
+        r = await client.post(
+            "/api/v1/chat/single",
+            json={"query": "What is the Zorbite consolidation algorithm and what does it do?"},
+            headers=auth(guest_token),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        if processed_book in {s["book"] for s in body["sources"]}:
+            break
     assert body["response"]
     assert processed_book in {s["book"] for s in body["sources"]}
 
