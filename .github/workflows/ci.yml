@@ -57,8 +57,8 @@ jobs:
       DEFAULT_MODEL_FRONTEND: openai/gpt-test
       OPENAI_API_KEY: ci-fake-key
       PDF_CHAPTER_DETECTION_MODEL: openai/gpt-test
-      EMBEDDING_SERVICE_URL: http://embedding.invalid
-      INTENT_SERVICE_URL: http://intent.invalid
+      EMBEDDING_SERVICE_URL: http://localhost:8002
+      INTENT_SERVICE_URL: http://localhost:8001
     steps:
       - uses: actions/checkout@v4
 
@@ -69,12 +69,44 @@ jobs:
           cache-dependency-path: |
             services/${{ matrix.service }}/requirements.txt
             services/${{ matrix.service }}/requirements-dev.txt
+            services/embedding-service/requirements.txt
+            services/intent-service/requirements.txt
+
+      - name: Cache ML models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ matrix.service }}
 
       - name: Initialize database schema
         run: psql "$DATABASE_URL" -f ../../scripts/init-db.sql
 
       - name: Wait for Qdrant
         run: timeout 60 bash -c 'until curl -sf http://localhost:6333/healthz; do sleep 2; done'
+
+      # Tests use the real ML services on CPU, each in its own venv (they pin
+      # different transformers versions; CPU torch wheels — CUDA doesn't fit
+      # the runner). Intent is only called by the api-gateway suite.
+      - name: Start embedding service
+        working-directory: services/embedding-service
+        run: |
+          python -m venv /tmp/embed-venv
+          /tmp/embed-venv/bin/pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+          /tmp/embed-venv/bin/pip install -r requirements.txt
+          DEVICE=cpu nohup /tmp/embed-venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8002 > /tmp/embedding.log 2>&1 &
+          timeout 600 bash -c 'until curl -sf http://localhost:8002/health; do sleep 5; done' \
+            || { cat /tmp/embedding.log; exit 1; }
+
+      - name: Start intent service
+        if: matrix.service == 'api-gateway'
+        working-directory: services/intent-service
+        run: |
+          python -m venv /tmp/intent-venv
+          /tmp/intent-venv/bin/pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+          /tmp/intent-venv/bin/pip install -r requirements.txt
+          DEVICE=cpu nohup /tmp/intent-venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 > /tmp/intent.log 2>&1 &
+          timeout 600 bash -c 'until curl -sf http://localhost:8001/health; do sleep 5; done' \
+            || { cat /tmp/intent.log; exit 1; }
 
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
