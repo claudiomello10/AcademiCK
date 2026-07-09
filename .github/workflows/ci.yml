@@ -59,6 +59,7 @@ jobs:
       PDF_CHAPTER_DETECTION_MODEL: openai/gpt-test
       EMBEDDING_SERVICE_URL: http://localhost:8002
       INTENT_SERVICE_URL: http://localhost:8001
+      SNAPSHOT_DIR: /tmp/academick-test-snapshots
     steps:
       - uses: actions/checkout@v4
 

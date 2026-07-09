@@ -115,6 +115,38 @@ cover.
 | `test_guest_cannot_delete_book` | guest DELETE → 403 and nothing is removed |
 | `test_delete_unknown_book_is_not_a_server_error` | deleting a nonexistent book never 500s |
 
+### test_snapshots.py — snapshot management (disaster recovery)
+
+| Test | Verifies |
+|---|---|
+| `test_snapshot_roundtrip_restores_deleted_book` | create snapshot → delete a seeded book everywhere → restore → **every Qdrant point (id + payload), the collection total, and the books/chapters rows are byte-identical** to before, and the book is listed again |
+| `test_restore_without_metadata_is_rejected` | restoring an unknown snapshot → 400, never a blind restore |
+| `test_snapshot_endpoints_require_admin` | guest on snapshot endpoints → 403 |
+
+Restore's contract: Qdrant vectors plus books/chapters metadata come back;
+rows in the `chunks` table are **not** part of a snapshot (chat works off
+Qdrant payloads, so retrieval is unaffected). Tests write snapshot metadata
+to `SNAPSHOT_DIR` (a temp dir — the real `data/qdrant_snapshots` mount is
+root-owned). Skipped entirely when `ENABLE_SNAPSHOT_MANAGEMENT` is off.
+
+### test_users_admin.py — database users (the non-config auth path)
+
+| Test | Verifies |
+|---|---|
+| `test_created_user_can_login_with_db_credentials` | user created via admin API can log in — exercises the bcrypt/DB branch of `authenticate_user` |
+| `test_deactivated_user_is_locked_out` | status → `inactive` ⇒ login → 401 |
+| `test_duplicate_username_rejected` | duplicate username → 400 |
+| `test_role_change_grants_and_revokes_admin_access` | promoting to admin takes effect on the next login; before it, admin routes → 403 |
+
+### test_conversations.py — conversation management
+
+| Test | Verifies |
+|---|---|
+| `test_conversation_lifecycle` | new → listed with title → renamed → deleted → gone |
+| `test_resume_conversation_returns_its_messages` | resume loads the conversation into the session |
+| `test_resume_unknown_conversation_is_404` | unknown id → 404 |
+| `test_clear_history_empties_the_conversation` | after a chat, `DELETE /chat/history` empties it |
+
 ### test_llm_real.py — `-m llm`
 
 `test_real_llm_chat_pipeline` runs `/chat/single` with the *real* models from

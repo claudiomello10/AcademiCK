@@ -60,6 +60,9 @@ export QDRANT_HOST="$QDRANT_IP"
 export QDRANT_PORT=6333
 export EMBEDDING_SERVICE_URL="http://${EMBEDDING_IP}:8002"
 export INTENT_SERVICE_URL="http://${INTENT_IP}:8001"
+# Snapshot metadata is written by the gateway (in-process here); the real
+# mount (data/qdrant_snapshots) is root-owned, so tests get their own dir.
+export SNAPSHOT_DIR="${TMPDIR:-/tmp}/academick-test-snapshots"
 
 MARKER_ARGS=()
 if [ "$RUN_LLM" -eq 1 ]; then
