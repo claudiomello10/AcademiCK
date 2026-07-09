@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down API Gateway...")
     await app.state.db_pool.close()
-    await app.state.redis.close()
+    await app.state.redis.aclose()
     await app.state.intent_client.close()
     await app.state.embedding_client.close()
     logger.info("API Gateway shutdown complete")

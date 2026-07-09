@@ -9,7 +9,7 @@ When running standalone, export them in your shell before starting the service.
 """
 
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _require_env(name: str) -> str:
@@ -70,8 +70,7 @@ class Settings(BaseSettings):
     upload_dir: str = os.getenv("UPLOAD_DIR", "/app/processed/uploads")
     processed_dir: str = os.getenv("PROCESSED_DIR", "/app/processed")
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings()

@@ -195,6 +195,7 @@ Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](doc
 | [Local LLMs](docs/local-llms.md) | Run against a self-hosted LLM (vLLM, Ollama, …) and provider routing |
 | [Database Schema](docs/database.md) | PostgreSQL tables, relationships, and analytics            |
 | [Vector Store](docs/qdrant.md)  | Qdrant collection, vectors, payload, and retrieval             |
+| [Testing](docs/testing.md)      | Test suites, tiers, what each test verifies, how to add more   |
 | [Known Issues](docs/KNOWN_ISSUES.md) | Logged problems, root causes, and workarounds            |
 | [Security Policy](SECURITY.md)  | Vulnerability reporting and deployment best practices          |
 | [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process                      |

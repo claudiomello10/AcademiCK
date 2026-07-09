@@ -34,6 +34,8 @@ interface BookInfo {
     processing_method?: string;
 }
 
+type SnapshotOp = 'restore' | 'delete' | 'download' | 'metadata';
+
 interface ExpandedState {
     [key: string]: boolean;
 }
@@ -61,6 +63,9 @@ const ContentManagement = () => {
     });
     const [snapshotToRestore, setSnapshotToRestore] = useState<string | null>(null);
     const [snapshotToDelete, setSnapshotToDelete] = useState<string | null>(null);
+    const [snapshotError, setSnapshotError] = useState<string | null>(null);
+    const [snapshotSuccess, setSnapshotSuccess] = useState('');
+    const [snapshotBusy, setSnapshotBusy] = useState<{ name: string; op: SnapshotOp } | null>(null);
     const [showUploadDialog, setShowUploadDialog] = useState(false);
     const [uploadSnapshotFile, setUploadSnapshotFile] = useState<File | null>(null);
     const [uploadMetadataFile, setUploadMetadataFile] = useState<File | null>(null);
@@ -353,6 +358,9 @@ const ContentManagement = () => {
         }
     };
 
+    const snapshotIsBusy = (name: string, op: SnapshotOp) =>
+        snapshotBusy?.name === name && snapshotBusy?.op === op;
+
     const fetchSnapshots = async () => {
         if (!sessionId) return;
         setSnapshotLoading(true);
@@ -361,10 +369,14 @@ const ContentManagement = () => {
             if (response.ok) {
                 const data = await response.json();
                 setSnapshots(data.snapshots);
+                setSnapshotError(null);
+            } else {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Failed to load snapshots (HTTP ${response.status})`);
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error('Failed to fetch snapshots:', error);
-            setError('Failed to load snapshots');
+            setSnapshotError(error.message || 'Failed to load snapshots');
         } finally {
             setSnapshotLoading(false);
         }
@@ -373,7 +385,8 @@ const ContentManagement = () => {
     const createSnapshot = async () => {
         if (!sessionId) return;
         setProcessing(true);
-        setError(null);
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
             const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.createSnapshot}`, {
                 method: 'POST',
@@ -381,13 +394,14 @@ const ContentManagement = () => {
             });
             if (response.ok) {
                 const data = await response.json();
-                setSuccess(`Snapshot created: ${data.snapshot_name}`);
+                setSnapshotSuccess(`Snapshot created: ${data.snapshot_name}`);
                 await fetchSnapshots();
             } else {
-                throw new Error('Failed to create snapshot');
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Failed to create snapshot (HTTP ${response.status})`);
             }
-        } catch (error) {
-            setError('Failed to create snapshot');
+        } catch (error: any) {
+            setSnapshotError(error.message || 'Failed to create snapshot');
         } finally {
             setProcessing(false);
         }
@@ -396,8 +410,9 @@ const ContentManagement = () => {
     const restoreSnapshot = async (snapshotName: string) => {
         if (!sessionId) return;
 
-        setProcessing(true);
-        setError(null);
+        setSnapshotBusy({ name: snapshotName, op: 'restore' });
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
             const response = await fetch(
                 `${API_BASE_URL}${API_ENDPOINTS.admin.restoreSnapshot(snapshotName)}`,
@@ -406,17 +421,17 @@ const ContentManagement = () => {
 
             if (response.ok) {
                 const data = await response.json();
-                setSuccess(`Restored: ${data.books_imported} books, ${data.chapters_imported} chapters`);
+                setSnapshotSuccess(`Restored: ${data.books_imported} books, ${data.chapters_imported} chapters`);
                 await fetchStats();
                 await fetchBooks();
             } else {
-                const err = await response.json();
+                const err = await response.json().catch(() => ({}));
                 throw new Error(err.detail || 'Failed to restore snapshot');
             }
         } catch (error: any) {
-            setError(error.message || 'Failed to restore snapshot');
+            setSnapshotError(error.message || 'Failed to restore snapshot');
         } finally {
-            setProcessing(false);
+            setSnapshotBusy(null);
             setSnapshotToRestore(null);
         }
     };
@@ -425,7 +440,8 @@ const ContentManagement = () => {
         if (!sessionId || !uploadSnapshotFile || !uploadMetadataFile) return;
 
         setProcessing(true);
-        setError(null);
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
             const formData = new FormData();
             formData.append('snapshot_file', uploadSnapshotFile);
@@ -438,16 +454,16 @@ const ContentManagement = () => {
 
             if (response.ok) {
                 const data = await response.json();
-                setSuccess(`Uploaded: ${data.books_imported} books, ${data.chapters_imported} chapters`);
+                setSnapshotSuccess(`Uploaded: ${data.books_imported} books, ${data.chapters_imported} chapters`);
                 await fetchSnapshots();
                 await fetchStats();
                 await fetchBooks();
             } else {
-                const err = await response.json();
+                const err = await response.json().catch(() => ({}));
                 throw new Error(err.detail || 'Failed to upload snapshot');
             }
         } catch (error: any) {
-            setError(error.message || 'Failed to upload snapshot');
+            setSnapshotError(error.message || 'Failed to upload snapshot');
         } finally {
             setProcessing(false);
             setShowUploadDialog(false);
@@ -474,47 +490,60 @@ const ContentManagement = () => {
 
     const downloadSnapshot = async (snapshotName: string) => {
         if (!sessionId) return;
+        setSnapshotBusy({ name: snapshotName, op: 'download' });
+        setSnapshotError(null);
         try {
             await downloadAsBlob(
                 `${API_BASE_URL}${API_ENDPOINTS.admin.downloadSnapshot(snapshotName)}`,
                 snapshotName
             );
-            setSuccess(`Downloading snapshot: ${snapshotName}`);
-        } catch (error) {
-            setError('Failed to download snapshot');
+            setSnapshotSuccess(`Downloading snapshot: ${snapshotName}`);
+        } catch (error: any) {
+            setSnapshotError(`Failed to download snapshot (${error.message})`);
+        } finally {
+            setSnapshotBusy(null);
         }
     };
 
     const downloadMetadata = async (snapshotName: string) => {
         if (!sessionId) return;
+        setSnapshotBusy({ name: snapshotName, op: 'metadata' });
+        setSnapshotError(null);
         try {
             await downloadAsBlob(
                 `${API_BASE_URL}${API_ENDPOINTS.admin.downloadMetadata(snapshotName)}`,
                 `${snapshotName}.metadata.json`
             );
-            setSuccess(`Downloading metadata for ${snapshotName}`);
-        } catch (error) {
-            setError('Failed to download metadata');
+            setSnapshotSuccess(`Downloading metadata for ${snapshotName}`);
+        } catch (error: any) {
+            setSnapshotError(`Failed to download metadata (${error.message})`);
+        } finally {
+            setSnapshotBusy(null);
         }
     };
 
     const deleteSnapshot = async (snapshotName: string) => {
         if (!sessionId) return;
 
+        setSnapshotBusy({ name: snapshotName, op: 'delete' });
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
             const response = await fetch(
                 `${API_BASE_URL}${API_ENDPOINTS.admin.deleteSnapshot(snapshotName)}`,
                 { method: 'DELETE', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
-                setSuccess(`Deleted snapshot: ${snapshotName}`);
+                setSnapshotSuccess(`Deleted snapshot: ${snapshotName}`);
                 await fetchSnapshots();
             } else {
-                throw new Error('Failed to delete snapshot');
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Failed to delete snapshot (HTTP ${response.status})`);
             }
-        } catch (error) {
-            setError('Failed to delete snapshot');
+        } catch (error: any) {
+            setSnapshotError(error.message || 'Failed to delete snapshot');
         } finally {
+            setSnapshotBusy(null);
             setSnapshotToDelete(null);
         }
     };
@@ -896,6 +925,21 @@ const ContentManagement = () => {
                         <CardDescription>Backup and restore vector database snapshots</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
+                        {/* Snapshot status — rendered here so failures are visible next to the actions */}
+                        {snapshotError && (
+                            <Alert variant="destructive" className="rounded-xl">
+                                <AlertCircle className="h-4 w-4" />
+                                <AlertTitle>Snapshot error</AlertTitle>
+                                <AlertDescription>{snapshotError}</AlertDescription>
+                            </Alert>
+                        )}
+                        {snapshotSuccess && (
+                            <Alert className="rounded-xl bg-green-50 border-green-200">
+                                <AlertTitle className="text-green-800">Success</AlertTitle>
+                                <AlertDescription className="text-green-700">{snapshotSuccess}</AlertDescription>
+                            </Alert>
+                        )}
+
                         {/* Create Snapshot Button */}
                         <div className="flex items-center justify-between">
                             <div>
@@ -975,27 +1019,40 @@ const ContentManagement = () => {
                                                         size="sm"
                                                         className="rounded-xl bg-blue-600 text-white hover:bg-blue-700"
                                                         onClick={() => setSnapshotToRestore(snapshot.name)}
-                                                        disabled={processing || !snapshot.has_metadata}
+                                                        disabled={processing || !!snapshotBusy || !snapshot.has_metadata}
                                                         title={!snapshot.has_metadata ? 'Metadata required for restore' : ''}
                                                     >
-                                                        <Upload className="h-4 w-4 mr-1" />
-                                                        Restore
+                                                        {snapshotIsBusy(snapshot.name, 'restore') ? (
+                                                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                                        ) : (
+                                                            <Upload className="h-4 w-4 mr-1" />
+                                                        )}
+                                                        {snapshotIsBusy(snapshot.name, 'restore') ? 'Restoring...' : 'Restore'}
                                                     </Button>
                                                     <Button
                                                         size="sm"
                                                         className="rounded-xl bg-green-600 text-white hover:bg-green-700"
                                                         onClick={() => downloadSnapshot(snapshot.name)}
+                                                        disabled={!!snapshotBusy}
                                                     >
-                                                        <Download className="h-4 w-4 mr-1" />
+                                                        {snapshotIsBusy(snapshot.name, 'download') ? (
+                                                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                                        ) : (
+                                                            <Download className="h-4 w-4 mr-1" />
+                                                        )}
                                                         Snapshot
                                                     </Button>
                                                     <Button
                                                         size="sm"
                                                         className="rounded-xl bg-green-500 text-white hover:bg-green-600"
                                                         onClick={() => downloadMetadata(snapshot.name)}
-                                                        disabled={!snapshot.has_metadata}
+                                                        disabled={!!snapshotBusy || !snapshot.has_metadata}
                                                     >
-                                                        <FileJson className="h-4 w-4 mr-1" />
+                                                        {snapshotIsBusy(snapshot.name, 'metadata') ? (
+                                                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                                        ) : (
+                                                            <FileJson className="h-4 w-4 mr-1" />
+                                                        )}
                                                         Metadata
                                                     </Button>
                                                     <Button
@@ -1003,8 +1060,13 @@ const ContentManagement = () => {
                                                         variant="destructive"
                                                         className="rounded-xl"
                                                         onClick={() => setSnapshotToDelete(snapshot.name)}
+                                                        disabled={!!snapshotBusy}
                                                     >
-                                                        <Trash2 className="h-4 w-4" />
+                                                        {snapshotIsBusy(snapshot.name, 'delete') ? (
+                                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                                        ) : (
+                                                            <Trash2 className="h-4 w-4" />
+                                                        )}
                                                     </Button>
                                                 </div>
                                             </div>

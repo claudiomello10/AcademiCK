@@ -71,6 +71,11 @@ Search results expose: `id`, `score`, `text`, `book_name`, `chapter_title`,
   `book_name` matches. PostgreSQL rows are deleted separately via FK cascade.
 - **Snapshots:** the collection can be snapshotted, listed, restored, and
   deleted through `QdrantManager` (exposed in the admin dashboard). Snapshots
-  are the supported backup/restore path for the vector store.
+  are the supported backup/restore path for the vector store. Qdrant writes
+  the `.snapshot` binaries to `./data/qdrant_snapshots` (host bind mount);
+  the gateway proxies all snapshot I/O over Qdrant's HTTP API and keeps only
+  a `.metadata.json` sidecar (books/chapters at snapshot time) in its
+  `snapshot_metadata` volume. Restore requires the sidecar. See
+  [USAGE.md](USAGE.md#backup-and-restore).
 - **Ingestion:** points are batch-upserted (100 at a time) by the PDF worker
   after embeddings are generated.

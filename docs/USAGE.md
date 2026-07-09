@@ -200,12 +200,32 @@ Access at http://localhost/admin with admin credentials.
 
 ## Backup and Restore
 
-Snapshots are managed through the admin dashboard or the API. Each snapshot includes the Qdrant vector data and a metadata JSON file with book/chapter information.
+Snapshots are managed through the admin dashboard or the API. A snapshot has
+two parts, stored in different places:
+
+- **`.snapshot` binary** — the vector collection at snapshot time. Qdrant
+  writes it to `/qdrant/snapshots`, bind-mounted to `./data/qdrant_snapshots`
+  on the host. (The *live* collection lives separately, in the `qdrant_data`
+  volume.)
+- **`.metadata.json` sidecar** — the books and chapters tables at snapshot
+  time, written by the api-gateway into its own `snapshot_metadata` volume.
+
+Creation is atomic: if the metadata file cannot be written, the snapshot is
+discarded and the API returns the underlying error — a snapshot without
+metadata cannot be restored, so none is ever kept. Restoring replaces the
+whole vector collection and re-imports the books/chapters rows. Rows in the
+`chunks` table are not part of a snapshot; chat retrieval is unaffected
+because chunk text lives in the Qdrant payloads.
+
+For off-site backups, download both files per snapshot (endpoints below) and
+re-import them later with the upload endpoint.
 
 ### Via Admin Dashboard
 
 1. Go to "Content Management" tab
 2. Use the snapshot management buttons to create, restore, download, upload, or delete snapshots
+3. Errors and per-action progress are shown inside the snapshot card; a
+   snapshot listed with "No metadata" cannot be restored
 
 ### Via API
 
@@ -441,14 +461,22 @@ docker compose exec postgres psql -U academick -d academick
 
 ### Qdrant Snapshot Issues
 
-```bash
-# Ensure snapshot directory has correct permissions
-mkdir -p data/qdrant_snapshots
-chmod 777 data/qdrant_snapshots
+Snapshot API errors are surfaced verbatim in the admin dashboard's snapshot
+card. To dig deeper:
 
-# Check Qdrant logs
+```bash
+# Check Qdrant logs (snapshot creation/restore happens inside Qdrant)
 docker logs academick-qdrant
+
+# Snapshot binaries, written by Qdrant (bind mount)
+ls -la data/qdrant_snapshots/academick_embeddings/
+
+# Metadata sidecars, written by the gateway (named volume)
+docker exec academick-api ls -la /app/snapshots/academick_embeddings/
 ```
+
+The `snapshot_metadata` volume is owned by the gateway's non-root user
+automatically — there are no host permissions to manage.
 
 ### Embedding Service Slow to Start
 

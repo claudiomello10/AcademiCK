@@ -181,7 +181,10 @@ services:
       - REASONING_TRACE_VISIBLE=${REASONING_TRACE_VISIBLE:-false}
       - DEFAULT_SUBJECT=${DEFAULT_SUBJECT:-Machine Learning}
     volumes:
-      - ./data/qdrant_snapshots:/app/snapshots
+      # Metadata JSONs only — snapshot binaries live in Qdrant and are proxied
+      # over its HTTP API. A named volume inherits the image's app-owned dir,
+      # so the non-root container can always write it.
+      - snapshot_metadata:/app/snapshots
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -352,4 +355,6 @@ volumes:
   model_cache:
     driver: local
   pdf_uploads:
+    driver: local
+  snapshot_metadata:
     driver: local
