@@ -1,6 +1,7 @@
 """Real-LLM chapter detection against the configured provider.
 
-Local only (pytest -m llm). Embedding stays stubbed — no GPU in the loop.
+Local only (pytest -m llm). Uses the real embedding service too — nothing in
+the pipeline is faked here.
 """
 
 import pytest

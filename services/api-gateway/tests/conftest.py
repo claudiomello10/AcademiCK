@@ -1,8 +1,10 @@
-"""Shared fixtures: real Postgres/Redis/Qdrant, faked LLM and ML services.
+"""Shared fixtures: real Postgres/Redis/Qdrant/embedding/intent services.
 
-The app config validates environment at import time, so the env check runs
-before any `app.*` import. scripts/run-tests.sh derives these variables from
-the running dev stack; CI sets them for its service containers.
+Only the LLM is faked in the default tier (see fake_llm); if the embedding or
+intent service is down, this suite fails. The app config validates environment
+at import time, so the env check runs before any `app.*` import.
+scripts/run-tests.sh derives these variables from the running dev stack; CI
+sets them for its service containers.
 """
 
 import os

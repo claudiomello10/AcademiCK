@@ -1,4 +1,9 @@
-"""PDF processing pipeline behavior: real Postgres/Qdrant, faked LLM/embedder."""
+"""PDF processing pipeline behavior.
+
+Real Postgres/Qdrant and real bge-m3 embeddings via the embedding service —
+only chapter detection (the LLM call) is faked. Fails if the embedding
+service is down.
+"""
 
 from types import SimpleNamespace
 

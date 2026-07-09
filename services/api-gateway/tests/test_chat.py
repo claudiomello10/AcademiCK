@@ -1,4 +1,9 @@
-"""Chat / RAG pipeline behavior: real routes, real Qdrant, faked LLM and ML."""
+"""Chat / RAG pipeline behavior through the real retrieval stack.
+
+Real routes, real Qdrant, real bge-m3 embeddings, real intent classification —
+only the LLM is faked (fake_llm). Fails if the embedding or intent service is
+down.
+"""
 
 import json
 import uuid

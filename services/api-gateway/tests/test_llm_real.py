@@ -1,8 +1,8 @@
-"""Real-LLM smoke test: full RAG pipeline with the configured models.
+"""Real-LLM smoke test: the full RAG pipeline with nothing faked.
 
-Local only (pytest -m llm). Embedding/intent stay stubbed — the point is to
-exercise the resolver, curation agent, and answer generation against the
-actual provider configured in .env.
+Local only (pytest -m llm). Real embedding and intent services plus the
+resolver, curation agent, and answer generation against the actual provider
+configured in .env.
 """
 
 import pytest

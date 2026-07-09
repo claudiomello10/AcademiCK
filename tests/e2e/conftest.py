@@ -2,6 +2,9 @@
 
 Runs against the compose stack through nginx (default http://localhost) and
 skips cleanly when the stack is not up. Local only — never runs in CI.
+
+Shared behavior lives in fixtures (auth, upload_and_wait, book_stats) so test
+modules never import from conftest directly.
 """
 
 import asyncio
@@ -18,8 +21,12 @@ FIXTURE_PDF = os.path.join(os.path.dirname(__file__), "fixtures", "academick-e2e
 BOOK_NAME = "academick-e2e-fixture"
 
 
-def auth(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+@pytest.fixture(scope="session")
+def auth():
+    def _auth(token: str) -> dict:
+        return {"Authorization": f"Bearer {token}"}
+
+    return _auth
 
 
 @pytest.fixture(scope="session")
@@ -61,46 +68,58 @@ async def guest_token(client):
     return r.json()["session_id"]
 
 
-async def upload_and_wait(client, admin_token) -> dict:
+@pytest.fixture(scope="session")
+def upload_and_wait(client, admin_token, auth):
     """Upload the fixture PDF and poll its job until completion."""
-    with open(FIXTURE_PDF, "rb") as f:
-        r = await client.post(
-            "/api/v1/admin/upload-pdfs",
-            files={"files": (f"{BOOK_NAME}.pdf", f.read(), "application/pdf")},
-            headers=auth(admin_token),
-        )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["jobs"], f"upload accepted no files: {body}"
-    job_id = body["jobs"][0]["job_id"]
 
-    deadline = time.monotonic() + PROCESS_TIMEOUT
-    last = {}
-    while time.monotonic() < deadline:
-        r = await client.get(
-            f"/api/v1/admin/pdf-job/{job_id}", headers=auth(admin_token)
-        )
+    async def _run() -> dict:
+        with open(FIXTURE_PDF, "rb") as f:
+            r = await client.post(
+                "/api/v1/admin/upload-pdfs",
+                files={"files": (f"{BOOK_NAME}.pdf", f.read(), "application/pdf")},
+                headers=auth(admin_token),
+            )
         assert r.status_code == 200, r.text
-        last = r.json()
-        if last.get("status") == "completed":
-            return last
-        if last.get("status") in ("failed", "cancelled"):
-            raise AssertionError(f"processing did not complete: {last}")
-        await asyncio.sleep(5)
-    raise AssertionError(f"processing timed out after {PROCESS_TIMEOUT}s: {last}")
+        body = r.json()
+        assert body["jobs"], f"upload accepted no files: {body}"
+        job_id = body["jobs"][0]["job_id"]
 
+        deadline = time.monotonic() + PROCESS_TIMEOUT
+        last = {}
+        while time.monotonic() < deadline:
+            r = await client.get(
+                f"/api/v1/admin/pdf-job/{job_id}", headers=auth(admin_token)
+            )
+            assert r.status_code == 200, r.text
+            last = r.json()
+            if last.get("status") == "completed":
+                return last
+            if last.get("status") in ("failed", "cancelled"):
+                raise AssertionError(f"processing did not complete: {last}")
+            await asyncio.sleep(5)
+        raise AssertionError(f"processing timed out after {PROCESS_TIMEOUT}s: {last}")
 
-async def book_stats(client, admin_token, name: str) -> dict | None:
-    r = await client.get("/api/v1/admin/book-list", headers=auth(admin_token))
-    assert r.status_code == 200, r.text
-    return next((b for b in r.json() if b["name"] == name), None)
+    return _run
 
 
 @pytest.fixture(scope="session")
-async def processed_book(client, admin_token):
+def book_stats(client, admin_token, auth):
+    """Look up one book's row in the admin book list (None when absent)."""
+
+    async def _stats(name: str) -> dict | None:
+        r = await client.get("/api/v1/admin/book-list", headers=auth(admin_token))
+        assert r.status_code == 200, r.text
+        return next((b for b in r.json() if b["name"] == name), None)
+
+    return _stats
+
+
+@pytest.fixture(scope="session")
+async def processed_book(client, admin_token, auth, upload_and_wait):
     """The fixture book, uploaded and fully processed; deleted afterwards."""
-    await upload_and_wait(client, admin_token)
+    await upload_and_wait()
     yield BOOK_NAME
-    await client.delete(
+    r = await client.delete(
         f"/api/v1/admin/books/{BOOK_NAME}", headers=auth(admin_token)
     )
+    assert r.status_code == 200, f"fixture book cleanup failed: {r.text}"

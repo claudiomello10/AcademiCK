@@ -1,12 +1,8 @@
 """Upload → process → query → re-upload, through the whole product."""
 
-from conftest import BOOK_NAME, auth, book_stats, upload_and_wait
 
-
-async def test_processed_book_is_listed_with_content(
-    client, admin_token, processed_book
-):
-    stats = await book_stats(client, admin_token, processed_book)
+async def test_processed_book_is_listed_with_content(processed_book, book_stats):
+    stats = await book_stats(processed_book)
     assert stats is not None
     assert stats["processing_status"] == "completed"
     assert stats["total_chunks"] > 0
@@ -14,7 +10,7 @@ async def test_processed_book_is_listed_with_content(
 
 
 async def test_query_answers_from_uploaded_book(
-    client, guest_token, processed_book
+    client, guest_token, auth, processed_book
 ):
     r = await client.post(
         "/api/v1/chat/single",
@@ -28,20 +24,20 @@ async def test_query_answers_from_uploaded_book(
 
 
 async def test_reupload_replaces_instead_of_duplicating(
-    client, admin_token, processed_book
+    processed_book, book_stats, upload_and_wait
 ):
-    before = await book_stats(client, admin_token, processed_book)
-    await upload_and_wait(client, admin_token)
-    after = await book_stats(client, admin_token, processed_book)
+    before = await book_stats(processed_book)
+    await upload_and_wait()
+    after = await book_stats(processed_book)
 
     assert after["total_chunks"] == before["total_chunks"]
     assert after["total_chapters"] == before["total_chapters"]
 
 
-async def test_guest_cannot_upload(client, guest_token):
+async def test_guest_cannot_upload(client, guest_token, auth):
     r = await client.post(
         "/api/v1/admin/upload-pdfs",
-        files={"files": (f"{BOOK_NAME}.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        files={"files": ("forbidden.pdf", b"%PDF-1.4 fake", "application/pdf")},
         headers=auth(guest_token),
     )
     assert r.status_code == 403
