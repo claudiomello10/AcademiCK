@@ -1086,8 +1086,12 @@ async def create_snapshot(request: Request, session: dict = Depends(get_admin_se
         from app.utils.snapshot_helpers import save_metadata_to_file
 
         result = await request.app.state.qdrant.create_snapshot()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # Save metadata alongside the snapshot file on disk
+    # A snapshot without metadata cannot be restored, so a failed metadata
+    # write must not leave the snapshot behind.
+    try:
         async with request.app.state.db_pool.acquire() as conn:
             await save_metadata_to_file(
                 conn,
@@ -1095,10 +1099,21 @@ async def create_snapshot(request: Request, session: dict = Depends(get_admin_se
                 settings.snapshot_dir,
                 settings.qdrant_collection
             )
-
-        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        try:
+            await request.app.state.qdrant.delete_snapshot(result["snapshot_name"])
+        except Exception as cleanup_error:
+            logger.error(f"Failed to delete orphaned snapshot: {cleanup_error}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Snapshot metadata could not be written to "
+                f"'{settings.snapshot_dir}' ({e}). The snapshot was discarded "
+                f"because it would not be restorable without metadata."
+            )
+        )
+
+    return result
 
 
 @router.get("/snapshots")
@@ -1289,12 +1304,28 @@ async def upload_snapshot(
         async with request.app.state.db_pool.acquire() as conn:
             import_result = await import_metadata(conn, metadata)
 
-        # Save metadata file to disk so it's available for future restores
-        metadata_dir = Path(settings.snapshot_dir) / settings.qdrant_collection
-        metadata_dir.mkdir(parents=True, exist_ok=True)
-        metadata_path = metadata_dir / f"{snapshot_filename}.metadata.json"
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        # Save metadata file to disk so it's available for future restores.
+        # Without it the uploaded snapshot would not be restorable, so drop
+        # the snapshot again if the write fails.
+        try:
+            metadata_dir = Path(settings.snapshot_dir) / settings.qdrant_collection
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            metadata_path = metadata_dir / f"{snapshot_filename}.metadata.json"
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            try:
+                await request.app.state.qdrant.delete_snapshot(snapshot_filename)
+            except Exception as cleanup_error:
+                logger.error(f"Failed to delete orphaned snapshot: {cleanup_error}")
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Snapshot metadata could not be written to "
+                    f"'{settings.snapshot_dir}' ({e}). The uploaded snapshot "
+                    f"was discarded because it would not be restorable."
+                )
+            )
 
         return {
             "success": True,
@@ -1303,6 +1334,8 @@ async def upload_snapshot(
             "chapters_imported": import_result.get("chapters_imported")
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to upload snapshot: {e}")
         raise HTTPException(status_code=500, detail=str(e))
