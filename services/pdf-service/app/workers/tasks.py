@@ -2,7 +2,7 @@
 
 import asyncio
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import httpx
 import asyncpg
@@ -223,7 +223,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     processing_status = 'processing',
                     updated_at = $4
                 RETURNING id
-            """, str(uuid4()), book_name, file_path, datetime.utcnow()))
+            """, str(uuid4()), book_name, file_path, datetime.now(timezone.utc)))
 
             # Purge any previous content for this book so a re-upload replaces
             # rather than duplicates. Must happen up front: chapter rows are
@@ -453,7 +453,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                         "is_introduction": chunk.get("is_introduction", False),
                         "chunk_index": chunk.get("chunk_index"),
                         "page_number": chunk.get("page"),
-                        "created_at": datetime.utcnow().isoformat()
+                        "created_at": datetime.now(timezone.utc).isoformat()
                     }
                 ))
 
@@ -519,7 +519,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                 """, chunk["id"], chunk["book_id"], chunk["chapter_id"],
                    chunk["qdrant_point_id"], clean_text, clean_topic,
                    chunk["is_introduction"], chunk.get("chunk_index"),
-                   chunk.get("page_number"), len(clean_text), datetime.utcnow())
+                   chunk.get("page_number"), len(clean_text), datetime.now(timezone.utc))
 
             # Update book status
             await conn.execute("""
@@ -530,7 +530,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     updated_at = $2,
                     processing_method = $4
                 WHERE id = $3
-            """, len(chunks_for_db), datetime.utcnow(), book_id, processing_method)
+            """, len(chunks_for_db), datetime.now(timezone.utc), book_id, processing_method)
 
             # Update chapter chunk counts
             for chapter_title, chapter_id in chapter_ids.items():
@@ -572,7 +572,7 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     UPDATE books
                     SET processing_status = 'failed', error_message = $1, updated_at = $2
                     WHERE name = $3
-                """, str(e), datetime.utcnow(), book_name)
+                """, str(e), datetime.now(timezone.utc), book_name)
         except Exception:
             pass
 

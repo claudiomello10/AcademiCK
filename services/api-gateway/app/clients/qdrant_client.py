@@ -3,7 +3,7 @@
 import asyncio
 import time
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Filter, FieldCondition, MatchValue,
@@ -430,7 +430,7 @@ class QdrantManager:
             return {
                 "success": True,
                 "snapshot_name": result.name,
-                "created_at": datetime.utcnow().isoformat()
+                "created_at": datetime.now(timezone.utc).isoformat()
             }
         except Exception as e:
             logger.error(f"Failed to create snapshot: {e}")

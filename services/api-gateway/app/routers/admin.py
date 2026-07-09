@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile, File
 from typing import List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 from app.dependencies import get_admin_session
@@ -349,7 +349,7 @@ async def get_chunk_retrieval_stats(request: Request, range: str = "7d", session
 async def get_usage_stats(request: Request, session: dict = Depends(get_admin_session)):
     """Get usage statistics (admin only)."""
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
 
     async with request.app.state.db_pool.acquire() as conn:
         # Total queries
@@ -616,7 +616,7 @@ async def get_book_list(request: Request, session: dict = Depends(get_admin_sess
 async def get_usage_stats_alias(request: Request, range: str = "7d", session: dict = Depends(get_admin_session)):
     """Get usage statistics - frontend compatible endpoint."""
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
 
     # Calculate date range
     if range == "7d":
