@@ -243,6 +243,21 @@ class AssignStudentRequest(BaseModel):
     registration_number: Optional[str] = None
 
 
+class TopicCreate(BaseModel):
+    """Create a topic or subtopic in a class's topic tree."""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    parent_topic_id: Optional[str] = None
+    position: int = 0
+
+
+class TopicUpdate(BaseModel):
+    """Update a topic; name/description changes re-embed the topic."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    position: Optional[int] = None
+
+
 # ===========================================
 # Subject
 # ===========================================

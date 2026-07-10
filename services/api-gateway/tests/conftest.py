@@ -337,10 +337,13 @@ def fake_llm(monkeypatch):
     Returned state dict lets a test scope the search to a book or force the
     NOT_IN_KB decision.
     """
-    from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
+    from pydantic_ai.messages import (
+        ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart,
+    )
     from pydantic_ai.models.function import FunctionModel
     from pydantic_ai.models.test import TestModel
 
+    from app.config import settings as app_settings
     from app.services import rag_orchestrator, reasoning_agent
 
     state = {
@@ -386,10 +389,28 @@ def fake_llm(monkeypatch):
             )]
         )
 
+    def resolver_fn(messages, info):
+        """Echo the raw user query as the resolved query, so downstream
+        consumers (topic classification) see real text, not TestModel noise."""
+        user_text = ""
+        for m in messages:
+            for part in getattr(m, "parts", []):
+                if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                    user_text = part.content
+        return ModelResponse(
+            parts=[ToolCallPart(
+                tool_name=info.output_tools[0].name,
+                args={"resolved_query": user_text},
+            )]
+        )
+
+    def orchestrator_model(model_name=None, *a, **k):
+        if model_name == app_settings.query_enhancement_model:
+            return FunctionModel(resolver_fn)
+        return TestModel()
+
     monkeypatch.setattr(
         reasoning_agent, "build_model", lambda *a, **k: FunctionModel(curation_fn)
     )
-    monkeypatch.setattr(
-        rag_orchestrator, "build_model", lambda *a, **k: TestModel()
-    )
+    monkeypatch.setattr(rag_orchestrator, "build_model", orchestrator_model)
     return state

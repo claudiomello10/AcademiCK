@@ -11,10 +11,16 @@ import logging
 
 from app.config import settings
 from app.dependencies import get_professor_session
+import json
+
+import asyncpg
+
 from app.models.schemas import (
     AddStudentRequest, ClassCreate, ClassUpdate, JoinCodeToggleRequest,
+    TopicCreate, TopicUpdate,
 )
 from app.services import class_service, pdf_upload
+from app.services.topic_classifier import embedding_text
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -160,6 +166,184 @@ async def remove_student(
         await class_service.get_owned_class(conn, class_id, session)
         await class_service.remove_student(conn, class_id, user_id)
     return {"message": "Student removed"}
+
+
+# ===========================================
+# Topics
+# ===========================================
+
+def _topic_response(row) -> dict:
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "description": row["description"],
+        "parent_topic_id": str(row["parent_topic_id"]) if row["parent_topic_id"] else None,
+        "position": row["position"],
+    }
+
+
+async def _embed_topic(request: Request, name: str, description: str | None) -> str:
+    result = await request.app.state.embedding_client.embed_batch(
+        [embedding_text(name, description)], return_sparse=False
+    )
+    return json.dumps(result["dense_embeddings"][0])
+
+
+async def _get_owned_topic(conn, topic_id: str, session: dict):
+    """Load a topic and enforce ownership of its class."""
+    try:
+        topic_uuid = UUID(topic_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    row = await conn.fetchrow(
+        """
+        SELECT t.id, t.class_id, t.parent_topic_id, t.name, t.description,
+               t.position, c.professor_id
+        FROM class_topics t
+        JOIN classes c ON c.id = t.class_id
+        WHERE t.id = $1
+        """,
+        topic_uuid,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    if session.get("role") != "admin" and str(row["professor_id"]) != session.get("user_id"):
+        raise HTTPException(status_code=403, detail="Not your class")
+    return row
+
+
+@router.get("/classes/{class_id}/topics")
+async def list_topics(
+    request: Request, class_id: str, session: dict = Depends(get_professor_session)
+):
+    """The class topic tree: topics with nested subtopics."""
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_owned_class(conn, class_id, session)
+        rows = await conn.fetch(
+            """
+            SELECT id, name, description, parent_topic_id, position
+            FROM class_topics
+            WHERE class_id = $1
+            ORDER BY position, name
+            """,
+            UUID(class_id),
+        )
+
+    topics = [
+        {**_topic_response(r), "subtopics": []}
+        for r in rows if r["parent_topic_id"] is None
+    ]
+    by_id = {t["id"]: t for t in topics}
+    for r in rows:
+        if r["parent_topic_id"] is not None:
+            parent = by_id.get(str(r["parent_topic_id"]))
+            if parent:
+                parent["subtopics"].append(_topic_response(r))
+    return {"topics": topics}
+
+
+@router.post("/classes/{class_id}/topics")
+async def create_topic(
+    request: Request,
+    class_id: str,
+    body: TopicCreate,
+    session: dict = Depends(get_professor_session),
+):
+    """Create a topic (or subtopic — one nesting level only)."""
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_owned_class(conn, class_id, session)
+
+        parent_uuid = None
+        if body.parent_topic_id:
+            parent = await _get_owned_topic(conn, body.parent_topic_id, session)
+            if str(parent["class_id"]) != class_id:
+                raise HTTPException(status_code=400, detail="Parent topic is in another class")
+            if parent["parent_topic_id"] is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Subtopics cannot have subtopics (one level only)",
+                )
+            parent_uuid = parent["id"]
+
+        embedding = await _embed_topic(request, body.name, body.description)
+
+        try:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO class_topics (class_id, parent_topic_id, name, description, embedding, position)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id, name, description, parent_topic_id, position
+                """,
+                UUID(class_id), parent_uuid, body.name, body.description,
+                embedding, body.position,
+            )
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A topic named '{body.name}' already exists at this level",
+            )
+
+    return _topic_response(row)
+
+
+@router.put("/topics/{topic_id}")
+async def update_topic(
+    request: Request,
+    topic_id: str,
+    body: TopicUpdate,
+    session: dict = Depends(get_professor_session),
+):
+    async with request.app.state.db_pool.acquire() as conn:
+        topic = await _get_owned_topic(conn, topic_id, session)
+
+        name = body.name if body.name is not None else topic["name"]
+        description = body.description if body.description is not None else topic["description"]
+        position = body.position if body.position is not None else topic["position"]
+
+        embedding = None
+        if name != topic["name"] or description != topic["description"]:
+            embedding = await _embed_topic(request, name, description)
+
+        try:
+            if embedding is not None:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE class_topics
+                    SET name = $1, description = $2, position = $3, embedding = $4
+                    WHERE id = $5
+                    RETURNING id, name, description, parent_topic_id, position
+                    """,
+                    name, description, position, embedding, topic["id"],
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE class_topics
+                    SET name = $1, description = $2, position = $3
+                    WHERE id = $4
+                    RETURNING id, name, description, parent_topic_id, position
+                    """,
+                    name, description, position, topic["id"],
+                )
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A topic named '{name}' already exists at this level",
+            )
+
+    return _topic_response(row)
+
+
+@router.delete("/topics/{topic_id}")
+async def delete_topic(
+    request: Request, topic_id: str, session: dict = Depends(get_professor_session)
+):
+    """Delete a topic; subtopics cascade, old assignments become unclassified."""
+    async with request.app.state.db_pool.acquire() as conn:
+        topic = await _get_owned_topic(conn, topic_id, session)
+        await conn.execute("DELETE FROM class_topics WHERE id = $1", topic["id"])
+    return {"message": "Topic deleted"}
 
 
 # ===========================================

@@ -94,6 +94,9 @@ async def lifespan(app: FastAPI):
     app.state.intent_client = IntentClient(settings.intent_service_url)
     app.state.embedding_client = EmbeddingClient(settings.embedding_service_url)
 
+    # Strong refs for fire-and-forget background tasks (topic classification)
+    app.state.bg_tasks = set()
+
     # Initialize config users if enabled
     if settings.config_users_enabled:
         await initialize_config_users(app.state.db_pool)

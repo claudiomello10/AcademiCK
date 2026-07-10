@@ -19,6 +19,23 @@ from app.services import class_service
 from app.services.rag_orchestrator import RAGOrchestrator
 from app.services.reasoning_agent import CurationTimeoutError
 from app.services.session_service import ConversationFullError
+from app.services.topic_classifier import classify_query
+
+
+def spawn_topic_classification(
+    app, class_id: str, message_id: Optional[str], text: str
+) -> None:
+    """Classify a stored user message in the background, off the chat path."""
+    if not message_id:
+        return
+    task = asyncio.create_task(
+        classify_query(
+            app.state.db_pool, app.state.embedding_client,
+            class_id, message_id, text,
+        )
+    )
+    app.state.bg_tasks.add(task)
+    task.add_done_callback(app.state.bg_tasks.discard)
 
 
 async def resolve_class_scope(request: Request, session: dict) -> tuple[str, List[str]]:
@@ -210,7 +227,7 @@ async def chat(
                 # we emit an error event and skip the done event so the
                 # client knows nothing was saved.
                 try:
-                    await request.app.state.session_service.add_message(
+                    user_message_id = await request.app.state.session_service.add_message(
                         session_id=session_id,
                         role="user",
                         content=chat_request.query,
@@ -255,6 +272,15 @@ async def chat(
                 payload = _build_chat_response(result).model_dump(mode="json")
                 await queue.put({"type": "done", "payload": payload})
 
+                # Topic analytics: classify the (resolved) query after the
+                # response is already on its way to the student.
+                spawn_topic_classification(
+                    request.app,
+                    class_id,
+                    user_message_id,
+                    result.get("resolved_query") or chat_request.query,
+                )
+
             except Exception as e:
                 logger.exception("chat stream failed")
                 await queue.put({"type": "error", "message": str(e)})
@@ -288,7 +314,8 @@ async def chat_single(
     Useful for one-off questions.
     """
     session_id = session["session_id"]
-    class_id, allowed_books = await resolve_class_scope(request, session)
+    # chat/single persists no messages, so there is nothing to classify
+    _, allowed_books = await resolve_class_scope(request, session)
 
     # Create RAG orchestrator
     orchestrator = RAGOrchestrator(
