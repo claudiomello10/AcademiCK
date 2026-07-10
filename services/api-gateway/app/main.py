@@ -13,7 +13,10 @@ from redis import asyncio as aioredis
 import logging
 
 from app.config import settings, CORS_ALLOWED_ORIGINS
-from app.routers import auth, chat, books, admin, health, manager, models
+from app.routers import (
+    auth, chat, books, admin, admin_classes, classes, health, manager, models,
+    professor,
+)
 from app.clients.qdrant_client import QdrantManager
 from app.clients.intent_client import IntentClient
 from app.clients.embedding_client import EmbeddingClient
@@ -135,8 +138,11 @@ app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
 app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
 app.include_router(books.router, prefix="/api/v1", tags=["Books"])
 app.include_router(models.router, prefix="/api/v1", tags=["Models"])
+app.include_router(classes.router, prefix="/api/v1", tags=["Classes"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
+app.include_router(admin_classes.router, prefix="/api/v1/admin", tags=["Admin Classes"])
 app.include_router(manager.router, prefix="/api/v1/manager", tags=["Manager"])
+app.include_router(professor.router, prefix="/api/v1/professor", tags=["Professor"])
 
 
 @app.get("/")

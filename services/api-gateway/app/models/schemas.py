@@ -194,6 +194,56 @@ class ProcessingJobResponse(BaseModel):
 
 
 # ===========================================
+# Classes
+# ===========================================
+
+class ClassCreate(BaseModel):
+    """Create class request (professor-owned)."""
+    name: str = Field(..., min_length=1, max_length=255)
+    subject: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
+class ClassCreateAdmin(ClassCreate):
+    """Create class request naming the owning professor (admin/manager)."""
+    professor_id: str
+
+
+class ClassUpdate(BaseModel):
+    """Update class request."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    subject: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class JoinClassRequest(BaseModel):
+    """Student join-by-code request."""
+    join_code: str = Field(..., min_length=1, max_length=16)
+
+
+class JoinCodeToggleRequest(BaseModel):
+    """Enable/disable a class join code."""
+    enabled: bool
+
+
+class SetActiveClassRequest(BaseModel):
+    """Select the session's active class."""
+    class_id: str
+
+
+class AddStudentRequest(BaseModel):
+    """Enroll a student by registration number (professor flow)."""
+    registration_number: str = Field(..., min_length=1, max_length=50)
+
+
+class AssignStudentRequest(BaseModel):
+    """Enroll a student by id or registration number (admin/manager flow)."""
+    user_id: Optional[str] = None
+    registration_number: Optional[str] = None
+
+
+# ===========================================
 # Subject
 # ===========================================
 

@@ -71,6 +71,7 @@ class SessionService:
             "username": username,
             "role": role,
             "subject": settings.default_subject,
+            "active_class_id": None,
             "conversation_id": conversation_id,
             "messages": [],
             "created_at": now.isoformat(),
@@ -115,7 +116,7 @@ class SessionService:
             # Get session with user info
             session_row = await conn.fetchrow("""
                 SELECT s.id, s.user_id, s.subject, s.is_active, s.created_at,
-                       u.username, u.role
+                       s.active_class_id, u.username, u.role
                 FROM sessions s
                 LEFT JOIN users u ON s.user_id = u.id
                 WHERE s.session_token = $1 AND s.is_active = true
@@ -160,6 +161,7 @@ class SessionService:
                 "username": session_row['username'] or "unknown",
                 "role": session_row['role'] or "user",
                 "subject": session_row['subject'],
+                "active_class_id": str(session_row['active_class_id']) if session_row['active_class_id'] else None,
                 "conversation_id": conversation_id,
                 "messages": messages,
                 "created_at": session_row['created_at'].isoformat() if session_row['created_at'] else now.isoformat(),
@@ -270,6 +272,61 @@ class SessionService:
             logger.warning(f"Failed to persist subject to PostgreSQL: {e}")
 
         return True
+
+    async def set_active_class(
+        self,
+        session_id: str,
+        class_id: str,
+        subject: str,
+    ) -> Optional[str]:
+        """Scope the session to a class and bind the conversation to it.
+
+        An empty current conversation is rebound in place; otherwise a new
+        conversation is created. Returns the resulting conversation_id.
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            return None
+
+        now = datetime.now(timezone.utc)
+        conversation_id = session.get("conversation_id")
+
+        async with self.db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE sessions SET active_class_id = $1, subject = $2, last_active = $3
+                WHERE session_token = $4
+            """, UUID(class_id), subject, now, session_id)
+
+            message_count = None
+            if conversation_id and self._is_valid_uuid(conversation_id):
+                message_count = await conn.fetchval(
+                    "SELECT message_count FROM conversations WHERE id = $1",
+                    UUID(conversation_id)
+                )
+
+            if message_count == 0:
+                await conn.execute("""
+                    UPDATE conversations SET class_id = $1, subject = $2, updated_at = $3
+                    WHERE id = $4
+                """, UUID(class_id), subject, now, UUID(conversation_id))
+            else:
+                conversation_id = str(uuid4())
+                user_id = session.get("user_id")
+                await conn.execute("""
+                    INSERT INTO conversations (id, session_id, user_id, class_id, subject, title, message_count, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $7)
+                """, UUID(conversation_id), UUID(session_id),
+                    UUID(user_id) if self._is_valid_uuid(user_id) else None,
+                    UUID(class_id), subject, "New Conversation", now)
+
+        await self.update_session(session_id, {
+            "active_class_id": class_id,
+            "subject": subject,
+            "conversation_id": conversation_id,
+            "messages": [] if session.get("conversation_id") != conversation_id else session.get("messages", []),
+        })
+
+        return conversation_id
 
     async def add_message(
         self,
@@ -448,15 +505,17 @@ class SessionService:
 
         user_id = session.get("user_id")
         subject = session.get("subject", settings.default_subject)
+        active_class_id = session.get("active_class_id")
         now = datetime.now(timezone.utc)
         conversation_id = str(uuid4())
 
         async with self.db_pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO conversations (id, session_id, user_id, subject, title, message_count, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, 0, $6, $6)
+                INSERT INTO conversations (id, session_id, user_id, class_id, subject, title, message_count, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $7)
             """, UUID(conversation_id), UUID(session_id),
                 UUID(user_id) if self._is_valid_uuid(user_id) else None,
+                UUID(active_class_id) if self._is_valid_uuid(active_class_id) else None,
                 subject, title or "New Conversation", now)
 
         # Update Redis session with new conversation
@@ -473,23 +532,30 @@ class SessionService:
     async def get_user_conversations(
         self,
         user_id: str,
-        limit: int = 50
+        limit: int = 50,
+        class_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get all conversations for a user."""
+        """Get all conversations for a user, optionally scoped to a class."""
         if not self._is_valid_uuid(user_id):
             return []
 
+        class_filter = ""
+        params = [UUID(user_id), limit]
+        if class_id and self._is_valid_uuid(class_id):
+            class_filter = "AND c.class_id = $3"
+            params.append(UUID(class_id))
+
         async with self.db_pool.acquire() as conn:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT c.id, c.session_id, c.subject, c.title, c.message_count,
                        c.created_at, c.updated_at,
                        s.session_token
                 FROM conversations c
                 LEFT JOIN sessions s ON c.session_id = s.id
-                WHERE c.user_id = $1
+                WHERE c.user_id = $1 {class_filter}
                 ORDER BY c.updated_at DESC
                 LIMIT $2
-            """, UUID(user_id), limit)
+            """, *params)
 
             return [
                 {
@@ -519,7 +585,7 @@ class SessionService:
         async with self.db_pool.acquire() as conn:
             # Verify ownership
             conv_row = await conn.fetchrow("""
-                SELECT id, subject, title, message_count
+                SELECT id, subject, title, message_count, class_id
                 FROM conversations
                 WHERE id = $1 AND user_id = $2
             """, UUID(conversation_id),
@@ -531,16 +597,25 @@ class SessionService:
             # Load messages
             messages = await self._load_messages_from_postgres(conn, UUID(conversation_id))
 
-        # Update session to use this conversation
-        session["conversation_id"] = conversation_id
-        session["subject"] = conv_row['subject']
-        session["messages"] = messages
+            # A class-bound conversation re-scopes the session to its class
+            conv_class_id = str(conv_row['class_id']) if conv_row['class_id'] else None
+            if conv_class_id and conv_class_id != session.get("active_class_id"):
+                await conn.execute("""
+                    UPDATE sessions SET active_class_id = $1, subject = $2
+                    WHERE session_token = $3
+                """, conv_row['class_id'], conv_row['subject'], session_id)
 
-        await self.update_session(session_id, {
+        # Update session to use this conversation
+        updates = {
             "conversation_id": conversation_id,
             "subject": conv_row['subject'],
             "messages": messages
-        })
+        }
+        if conv_class_id:
+            updates["active_class_id"] = conv_class_id
+        session.update(updates)
+
+        await self.update_session(session_id, updates)
 
         return {
             "conversation_id": conversation_id,
