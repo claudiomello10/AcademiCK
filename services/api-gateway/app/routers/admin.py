@@ -10,7 +10,7 @@ from app.models.schemas import (
     UserCreate, UserUpdate, UserResponse, UserImportResponse,
     ContentStats, UsageStats, ProcessingJobResponse, VALID_ROLES
 )
-from app.services import user_service, user_import
+from app.services import class_service, pdf_upload, user_service, user_import
 from app.config import settings
 
 router = APIRouter()
@@ -607,6 +607,9 @@ async def delete_book(request: Request, book_name: str, session: dict = Depends(
             """, book_name)
             pg_deleted = result != "DELETE 0"
 
+        # Cached search results may still cite the deleted book
+        await class_service.flush_search_cache(request.app.state.redis)
+
         return {
             "success": True,
             "book_name": book_name,
@@ -621,178 +624,29 @@ async def delete_book(request: Request, book_name: str, session: dict = Depends(
 
 @router.post("/upload-pdfs")
 async def upload_pdfs(request: Request, session: dict = Depends(get_admin_session)):
-    """Upload PDFs for processing via pdf-service."""
-    import httpx
-    import json as json_lib
+    """Upload PDFs for processing via pdf-service.
 
-
-    # Get the form data from the request
+    An optional `class_id` form field attaches the resulting books to a
+    class at ingest; books stay global (no owner) either way.
+    """
     form = await request.form()
     files = form.getlist("files")
+    class_id = form.get("class_id") or None
 
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
-
-    jobs = []
-    errors = []
-
-    # Forward each file to pdf-service
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for file in files:
-            if hasattr(file, 'filename') and hasattr(file, 'read'):
-                try:
-                    # Read file content
-                    content = await file.read()
-
-                    # Forward to pdf-service
-                    pdf_service_url = "http://pdf-service:8003/upload"
-                    response = await client.post(
-                        pdf_service_url,
-                        files={"file": (file.filename, content, "application/pdf")}
-                    )
-
-                    if response.status_code == 200:
-                        result = response.json()
-                        celery_task_id = result.get("job_id")
-
-                        # Persist job to PostgreSQL for visibility to all admins
-                        async with request.app.state.db_pool.acquire() as conn:
-                            pg_job_id = await conn.fetchval("""
-                                INSERT INTO processing_jobs
-                                    (job_type, status, progress, metadata, created_at)
-                                VALUES ('pdf_processing', 'pending', 0, $1, NOW())
-                                RETURNING id
-                            """, json_lib.dumps({
-                                "celery_task_id": celery_task_id,
-                                "filename": file.filename
-                            }))
-
-                        jobs.append({
-                            "filename": file.filename,
-                            "job_id": str(pg_job_id),  # Return PostgreSQL job ID
-                            "celery_task_id": celery_task_id,
-                            "status": "pending"
-                        })
-                    else:
-                        errors.append({
-                            "filename": file.filename,
-                            "error": response.text
-                        })
-                except Exception as e:
-                    errors.append({
-                        "filename": file.filename if hasattr(file, 'filename') else "unknown",
-                        "error": str(e)
-                    })
-
-    return {
-        "message": f"Submitted {len(jobs)} PDF(s) for processing",
-        "jobs": jobs,
-        "errors": errors,
-        "books_processed": len(jobs),
-        "total_chunks": 0  # Will be updated when processing completes
-    }
+    return await pdf_upload.forward_pdfs(
+        files,
+        request.app.state.db_pool,
+        uploaded_by=session["user_id"],
+        class_id=class_id,
+    )
 
 
 @router.get("/pdf-job/{job_id}")
 async def get_pdf_job_status(request: Request, job_id: str, session: dict = Depends(get_admin_session)):
     """Get PDF processing job status - syncs PostgreSQL with Celery."""
-    import httpx
-    import json as json_lib
-
-
-    # First, get job from PostgreSQL
-    async with request.app.state.db_pool.acquire() as conn:
-        job = await conn.fetchrow("""
-            SELECT id, status, progress, error_message, metadata, completed_at
-            FROM processing_jobs
-            WHERE id = $1
-        """, job_id)
-
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-
-        metadata = job["metadata"] if job["metadata"] else {}
-        if isinstance(metadata, str):
-            metadata = json_lib.loads(metadata)
-
-        celery_task_id = metadata.get("celery_task_id")
-        filename = metadata.get("filename", "unknown")
-
-        # If job is still in progress, query Celery for live status
-        if job["status"] in ("pending", "processing") and celery_task_id:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(f"http://pdf-service:8003/job/{celery_task_id}")
-
-                    if response.status_code == 200:
-                        celery_data = response.json()
-                        new_status = celery_data.get("status", job["status"])
-                        new_progress = celery_data.get("progress", job["progress"])
-
-                        # Extract meta info from Celery result
-                        celery_result = celery_data.get("result", {}) or {}
-                        stage = None
-                        chapters_total = 0
-                        chapters_processed = 0
-                        warning = None
-
-                        if isinstance(celery_result, dict):
-                            stage = celery_result.get("stage")
-                            chapters_total = celery_result.get("chapters_total", 0)
-                            chapters_processed = celery_result.get("chapters_processed", 0)
-                            warning = celery_result.get("warning")
-
-                        error = celery_data.get("error")
-
-                        # Update PostgreSQL with latest status from Celery
-                        if new_status != job["status"] or new_progress != job["progress"]:
-                            if new_status == "completed":
-                                await conn.execute("""
-                                    UPDATE processing_jobs
-                                    SET status = $1, progress = $2, completed_at = NOW()
-                                    WHERE id = $3
-                                """, new_status, new_progress, job_id)
-                                # New content just landed in Qdrant
-                                request.app.state.qdrant.invalidate_catalog_cache()
-                            elif new_status == "failed":
-                                await conn.execute("""
-                                    UPDATE processing_jobs
-                                    SET status = $1, progress = $2, error_message = $3, completed_at = NOW()
-                                    WHERE id = $4
-                                """, new_status, new_progress, error, job_id)
-                            else:
-                                await conn.execute("""
-                                    UPDATE processing_jobs
-                                    SET status = $1, progress = $2
-                                    WHERE id = $3
-                                """, new_status, new_progress, job_id)
-
-                        return {
-                            "job_id": str(job["id"]),
-                            "status": new_status,
-                            "progress": new_progress,
-                            "filename": filename,
-                            "stage": stage,
-                            "chapters_total": chapters_total,
-                            "chapters_processed": chapters_processed,
-                            "warning": warning,
-                            "error": error
-                        }
-            except Exception as e:
-                # If Celery query fails, return PostgreSQL data
-                pass
-
-        # Return data from PostgreSQL
-        return {
-            "job_id": str(job["id"]),
-            "status": job["status"],
-            "progress": job["progress"] or 0,
-            "filename": filename,
-            "chapters_total": 0,
-            "chapters_processed": 0,
-            "warning": None,
-            "error": job["error_message"]
-        }
+    return await pdf_upload.sync_job_status(
+        request.app.state.db_pool, request.app.state.qdrant, job_id
+    )
 
 
 @router.delete("/jobs/{job_id}")

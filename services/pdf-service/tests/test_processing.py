@@ -45,6 +45,60 @@ async def test_reprocessing_replaces_content_without_duplicates(
     assert second_counts == first_counts
 
 
+async def test_processing_with_class_binds_book_to_class_and_owner(
+    synthetic_pdf, book_name, task_stub, stub_chapter_llm, block_docling
+):
+    import uuid as uuid_lib
+
+    import asyncpg
+
+    from app.config import settings
+
+    conn = await asyncpg.connect(settings.database_url)
+    professor_id = str(uuid_lib.uuid4())
+    class_id = str(uuid_lib.uuid4())
+    username = f"test-prof-{uuid_lib.uuid4().hex[:8]}"
+    try:
+        await conn.execute(
+            """
+            INSERT INTO users (id, username, password_hash, role)
+            VALUES ($1, $2, 'x', 'professor')
+            """,
+            professor_id, username,
+        )
+        await conn.execute(
+            """
+            INSERT INTO classes (id, name, subject, professor_id)
+            VALUES ($1, 'pdf-test-class', 'Test', $2)
+            """,
+            class_id, professor_id,
+        )
+
+        result = await _process_pdf_async(
+            task_stub, synthetic_pdf, book_name,
+            class_id=class_id, owner_user_id=professor_id,
+        )
+        assert result["success"] is True
+
+        row = await conn.fetchrow(
+            """
+            SELECT b.owner_user_id, cb.class_id, cb.added_by
+            FROM books b
+            JOIN class_books cb ON cb.book_id = b.id
+            WHERE b.name = $1
+            """,
+            book_name,
+        )
+        assert row is not None
+        assert str(row["owner_user_id"]) == professor_id
+        assert str(row["class_id"]) == class_id
+        assert str(row["added_by"]) == professor_id
+    finally:
+        # users cascade removes the class, class_books row and book ownership
+        await conn.execute("DELETE FROM users WHERE id = $1", professor_id)
+        await conn.close()
+
+
 async def test_failure_of_all_methods_marks_book_failed(
     synthetic_pdf, book_name, task_stub, block_docling, monkeypatch
 ):

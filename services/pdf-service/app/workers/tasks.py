@@ -75,12 +75,16 @@ def run_async(coro):
 
 
 @celery_app.task(bind=True)
-def process_pdf_task(self, file_path: str, book_name: str):
+def process_pdf_task(self, file_path: str, book_name: str,
+                     class_id: str = None, owner_user_id: str = None):
     """
     Process a PDF file: extract text, chunk, generate embeddings,
-    store in Qdrant and PostgreSQL.
+    store in Qdrant and PostgreSQL. Optionally binds the book to a
+    class and an owning user (professor uploads).
     """
-    return run_async(_process_pdf_async(self, file_path, book_name))
+    return run_async(
+        _process_pdf_async(self, file_path, book_name, class_id, owner_user_id)
+    )
 
 
 async def _process_docling_sections(
@@ -162,7 +166,8 @@ async def _process_docling_sections(
     return all_chunks, chapter_ids, chapters_info
 
 
-async def _process_pdf_async(task, file_path: str, book_name: str):
+async def _process_pdf_async(task, file_path: str, book_name: str,
+                             class_id: str = None, owner_user_id: str = None):
     """Async implementation of PDF processing with two-method support.
 
     Tries the default LLM-based processor first, falls back to Docling
@@ -224,6 +229,20 @@ async def _process_pdf_async(task, file_path: str, book_name: str):
                     updated_at = $4
                 RETURNING id
             """, str(uuid4()), book_name, file_path, datetime.now(timezone.utc)))
+
+            # Class/owner binding for professor uploads. Attaching at ingest
+            # start is safe: class visibility filters on status 'completed'.
+            if owner_user_id:
+                await conn.execute(
+                    "UPDATE books SET owner_user_id = $1 WHERE id = $2",
+                    owner_user_id, book_id,
+                )
+            if class_id:
+                await conn.execute("""
+                    INSERT INTO class_books (class_id, book_id, added_by)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT DO NOTHING
+                """, class_id, book_id, owner_user_id)
 
             # Purge any previous content for this book so a re-upload replaces
             # rather than duplicates. Must happen up front: chapter rows are

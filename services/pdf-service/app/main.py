@@ -5,7 +5,7 @@ Handles PDF upload, text extraction, chunking, and embedding generation.
 Uses Celery for async processing.
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
 import io
@@ -83,7 +83,9 @@ async def process_pdf(request: ProcessRequest):
 @app.post("/upload", response_model=ProcessResponse)
 async def upload_and_process(
     file: UploadFile = File(...),
-    book_name: Optional[str] = None
+    book_name: Optional[str] = None,
+    class_id: Optional[str] = Form(None),
+    owner_user_id: Optional[str] = Form(None),
 ):
     """
     Upload a PDF file and start processing.
@@ -158,7 +160,9 @@ async def upload_and_process(
 
     task = process_pdf_task.delay(
         file_path=file_path,
-        book_name=book_name
+        book_name=book_name,
+        class_id=class_id,
+        owner_user_id=owner_user_id
     )
 
     return ProcessResponse(
