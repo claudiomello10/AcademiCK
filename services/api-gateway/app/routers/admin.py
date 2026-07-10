@@ -1,16 +1,16 @@
 """Admin endpoints."""
 
-from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile, File
-from typing import List
+from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile, File, Form
+from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import logging
 
 from app.dependencies import get_admin_session
 from app.models.schemas import (
-    UserCreate, UserUpdate, UserResponse,
-    ContentStats, UsageStats, ProcessingJobResponse
+    UserCreate, UserUpdate, UserResponse, UserImportResponse,
+    ContentStats, UsageStats, ProcessingJobResponse, VALID_ROLES
 )
-from app.utils.security import hash_password
+from app.services import user_service, user_import
 from app.config import settings
 
 router = APIRouter()
@@ -26,25 +26,7 @@ async def list_users(request: Request, session: dict = Depends(get_admin_session
     """List all users (admin only)."""
 
     async with request.app.state.db_pool.acquire() as conn:
-        users = await conn.fetch("""
-            SELECT id, username, email, role, status, is_config_user, created_at, last_active
-            FROM users
-            ORDER BY created_at DESC
-        """)
-
-        return [
-            UserResponse(
-                id=str(u["id"]),
-                username=u["username"],
-                email=u["email"],
-                role=u["role"],
-                status=u["status"],
-                is_config_user=u["is_config_user"],
-                created_at=u["created_at"],
-                last_active=u["last_active"]
-            )
-            for u in users
-        ]
+        return await user_service.list_users(conn)
 
 
 @router.post("/users", response_model=UserResponse)
@@ -52,34 +34,25 @@ async def create_user(request: Request, user: UserCreate, session: dict = Depend
     """Create a new user (admin only)."""
 
     async with request.app.state.db_pool.acquire() as conn:
-        # Check if username exists
-        exists = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)",
-            user.username
-        )
+        return await user_service.create_user(conn, user)
 
-        if exists:
-            raise HTTPException(status_code=400, detail="Username already exists")
 
-        # Create user
-        password_hash = hash_password(user.password)
-
-        row = await conn.fetchrow("""
-            INSERT INTO users (username, email, password_hash, role)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, username, email, role, status, is_config_user, created_at, last_active
-        """, user.username, user.email, password_hash, user.role)
-
-        return UserResponse(
-            id=str(row["id"]),
-            username=row["username"],
-            email=row["email"],
-            role=row["role"],
-            status=row["status"],
-            is_config_user=row["is_config_user"],
-            created_at=row["created_at"],
-            last_active=row["last_active"]
-        )
+@router.post("/users/import", response_model=UserImportResponse)
+async def import_users(
+    request: Request,
+    file: UploadFile = File(...),
+    default_password: Optional[str] = Form(None),
+    session: dict = Depends(get_admin_session),
+):
+    """Bulk-import users from a file (admin only). Reports errors per row."""
+    content = await file.read()
+    return await user_import.import_users(
+        request.app.state.db_pool,
+        file.filename,
+        content,
+        allowed_roles=VALID_ROLES,
+        default_password=default_password,
+    )
 
 
 @router.put("/users/{user_id}", response_model=UserResponse)
@@ -92,51 +65,7 @@ async def update_user(
     """Update a user (admin only)."""
 
     async with request.app.state.db_pool.acquire() as conn:
-        # Build update query dynamically
-        update_fields = []
-        values = []
-        param_count = 1
-
-        if updates.email is not None:
-            update_fields.append(f"email = ${param_count}")
-            values.append(updates.email)
-            param_count += 1
-
-        if updates.role is not None:
-            update_fields.append(f"role = ${param_count}")
-            values.append(updates.role)
-            param_count += 1
-
-        if updates.status is not None:
-            update_fields.append(f"status = ${param_count}")
-            values.append(updates.status)
-            param_count += 1
-
-        if not update_fields:
-            raise HTTPException(status_code=400, detail="No fields to update")
-
-        values.append(user_id)
-
-        row = await conn.fetchrow(f"""
-            UPDATE users
-            SET {', '.join(update_fields)}, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ${param_count}
-            RETURNING id, username, email, role, status, is_config_user, created_at, last_active
-        """, *values)
-
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        return UserResponse(
-            id=str(row["id"]),
-            username=row["username"],
-            email=row["email"],
-            role=row["role"],
-            status=row["status"],
-            is_config_user=row["is_config_user"],
-            created_at=row["created_at"],
-            last_active=row["last_active"]
-        )
+        return await user_service.update_user(conn, user_id, updates)
 
 
 # ===========================================

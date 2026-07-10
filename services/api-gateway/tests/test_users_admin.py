@@ -17,13 +17,24 @@ async def temp_user(app, client, admin_token):
     """A freshly created DB user; the row is removed afterwards."""
     username = f"test-user-{uuid.uuid4().hex[:8]}"
     password = "temp-user-password"
+    registration = f"RA{uuid.uuid4().hex[:10]}"
     r = await client.post(
         "/api/v1/admin/users",
-        json={"username": username, "password": password, "role": "user"},
+        json={
+            "username": username,
+            "password": password,
+            "role": "user",
+            "registration_number": registration,
+        },
         headers=auth(admin_token),
     )
     assert r.status_code == 200, r.text
-    yield {"id": r.json()["id"], "username": username, "password": password}
+    yield {
+        "id": r.json()["id"],
+        "username": username,
+        "password": password,
+        "registration_number": registration,
+    }
     async with app.state.db_pool.acquire() as conn:
         await conn.execute("DELETE FROM users WHERE username = $1", username)
 
@@ -65,6 +76,61 @@ async def test_duplicate_username_rejected(client, admin_token, temp_user):
         headers=auth(admin_token),
     )
     assert r.status_code == 400
+
+
+async def test_student_requires_registration_number(client, admin_token):
+    r = await client.post(
+        "/api/v1/admin/users",
+        json={
+            "username": f"test-user-{uuid.uuid4().hex[:8]}",
+            "password": "some-password",
+            "role": "user",
+        },
+        headers=auth(admin_token),
+    )
+    assert r.status_code == 400
+    assert "registration" in r.json()["detail"].lower()
+
+
+async def test_duplicate_registration_number_conflict(client, admin_token, temp_user):
+    other = f"test-user-{uuid.uuid4().hex[:8]}"
+    r = await client.post(
+        "/api/v1/admin/users",
+        json={
+            "username": other,
+            "password": "some-password",
+            "role": "user",
+            "registration_number": temp_user["registration_number"],
+        },
+        headers=auth(admin_token),
+    )
+    assert r.status_code == 409
+    assert temp_user["registration_number"] in r.json()["detail"]
+
+
+async def test_professors_do_not_need_registration_number(client, make_user):
+    professor = await make_user(role="professor")
+    assert professor["registration_number"] is None
+
+
+async def test_registration_number_backfill_and_conflict_on_update(
+    client, admin_token, make_user, temp_user
+):
+    professor = await make_user(role="professor")
+
+    r = await client.put(
+        f"/api/v1/admin/users/{professor['id']}",
+        json={"registration_number": temp_user["registration_number"]},
+        headers=auth(admin_token),
+    )
+    assert r.status_code == 409
+
+    r = await client.put(
+        f"/api/v1/admin/users/{professor['id']}",
+        json={"registration_number": f"RA{uuid.uuid4().hex[:10]}"},
+        headers=auth(admin_token),
+    )
+    assert r.status_code == 200
 
 
 async def test_role_change_grants_and_revokes_admin_access(

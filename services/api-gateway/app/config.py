@@ -136,6 +136,22 @@ class Settings(BaseSettings):
     # Default subject for new sessions
     default_subject: str = os.getenv("DEFAULT_SUBJECT", "Machine Learning")
 
+    # Enrollment methods (each independently switchable)
+    enrollment_join_code_enabled: bool = os.getenv("ENROLLMENT_JOIN_CODE_ENABLED", "true").lower() == "true"
+    enrollment_by_registration_enabled: bool = os.getenv("ENROLLMENT_BY_REGISTRATION_ENABLED", "true").lower() == "true"
+    enrollment_admin_assign_enabled: bool = os.getenv("ENROLLMENT_ADMIN_ASSIGN_ENABLED", "true").lower() == "true"
+
+    # Professor book upload; when false professors can only attach catalog books
+    professor_book_upload_enabled: bool = os.getenv("PROFESSOR_BOOK_UPLOAD_ENABLED", "true").lower() == "true"
+
+    # Query-to-topic classification (embedding similarity, async post-response)
+    topic_classification_enabled: bool = os.getenv("TOPIC_CLASSIFICATION_ENABLED", "true").lower() == "true"
+    topic_similarity_threshold: float = float(os.getenv("TOPIC_SIMILARITY_THRESHOLD", "0.45"))
+
+    # Professor analytics LLM digest (on-demand, off by default)
+    analytics_summary_enabled: bool = os.getenv("ANALYTICS_SUMMARY_ENABLED", "false").lower() == "true"
+    analytics_summary_model: str = os.getenv("ANALYTICS_SUMMARY_MODEL", "openai/gpt-5-mini")
+
     # Admin feature toggles
     enable_snapshot_management: bool = os.getenv("ENABLE_SNAPSHOT_MANAGEMENT", "true").lower() == "true"
     enable_pdf_upload: bool = os.getenv("ENABLE_PDF_UPLOAD", "true").lower() == "true"

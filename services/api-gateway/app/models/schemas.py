@@ -117,12 +117,16 @@ class BookListResponse(BaseModel):
 # Admin
 # ===========================================
 
+VALID_ROLES = ("user", "professor", "manager", "admin")
+
+
 class UserCreate(BaseModel):
     """Create user request."""
     username: str = Field(..., min_length=3, max_length=100)
     email: Optional[str] = None
     password: str = Field(..., min_length=6, max_length=100)
     role: str = Field(default="user")
+    registration_number: Optional[str] = Field(default=None, max_length=50)
 
 
 class UserUpdate(BaseModel):
@@ -130,6 +134,7 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
     role: Optional[str] = None
     status: Optional[str] = None
+    registration_number: Optional[str] = Field(default=None, max_length=50)
 
 
 class UserResponse(BaseModel):
@@ -140,8 +145,22 @@ class UserResponse(BaseModel):
     role: str
     status: str
     is_config_user: bool
+    registration_number: Optional[str] = None
     created_at: datetime
     last_active: Optional[datetime]
+
+
+class ImportRowError(BaseModel):
+    """A single failed row in a bulk user import."""
+    row: int
+    username: Optional[str] = None
+    error: str
+
+
+class UserImportResponse(BaseModel):
+    """Bulk user import result."""
+    created: int
+    errors: List[ImportRowError]
 
 
 class ContentStats(BaseModel):

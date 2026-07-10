@@ -136,6 +136,51 @@ async def guest_token(client):
 
 
 @pytest.fixture
+async def make_user(app, client, admin_token):
+    """Factory creating a DB user of any role, logged in; rows removed afterwards.
+
+    Students get a unique registration number automatically (it is mandatory).
+    """
+    created = []
+
+    async def _make(role: str = "user", **overrides) -> dict:
+        username = overrides.get("username", f"test-{role}-{uuid.uuid4().hex[:8]}")
+        password = overrides.get("password", f"pw-{uuid.uuid4().hex[:8]}")
+        payload = {"username": username, "password": password, "role": role}
+        if "registration_number" in overrides:
+            payload["registration_number"] = overrides["registration_number"]
+        elif role == "user":
+            payload["registration_number"] = f"RA{uuid.uuid4().hex[:10]}"
+
+        r = await client.post(
+            "/api/v1/admin/users", json=payload, headers=auth(admin_token)
+        )
+        assert r.status_code == 200, r.text
+        created.append(username)
+        body = r.json()
+
+        r = await client.post(
+            "/api/v1/login", json={"username": username, "password": password}
+        )
+        assert r.status_code == 200, r.text
+
+        return {
+            "id": body["id"],
+            "username": username,
+            "password": password,
+            "role": role,
+            "registration_number": body.get("registration_number"),
+            "token": r.json()["session_id"],
+        }
+
+    yield _make
+
+    async with app.state.db_pool.acquire() as conn:
+        for username in created:
+            await conn.execute("DELETE FROM users WHERE username = $1", username)
+
+
+@pytest.fixture
 async def seed_book(app):
     """Factory that seeds a uniquely-named book into Postgres and Qdrant.
 

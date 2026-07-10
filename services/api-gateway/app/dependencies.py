@@ -81,3 +81,19 @@ async def get_admin_session(session: dict = Depends(get_current_session)) -> dic
         )
 
     return session
+
+
+def require_role(*roles: str):
+    """Dependency factory: session role must be one of `roles`."""
+    async def checker(session: dict = Depends(get_current_session)) -> dict:
+        if session.get("role") not in roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Requires role: {', '.join(roles)}"
+            )
+        return session
+    return checker
+
+
+get_professor_session = require_role("professor", "admin")
+get_manager_session = require_role("manager", "admin")
