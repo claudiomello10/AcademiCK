@@ -14,9 +14,10 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(100) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(50) DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    role VARCHAR(50) DEFAULT 'user' CHECK (role IN ('user', 'professor', 'manager', 'admin')),
     status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'suspended')),
     is_config_user BOOLEAN DEFAULT false,
+    registration_number VARCHAR(50),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     last_active TIMESTAMP WITH TIME ZONE
@@ -25,6 +26,54 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_registration_number
+    ON users(registration_number) WHERE registration_number IS NOT NULL;
+
+-- ===========================================
+-- CLASSES
+-- ===========================================
+
+CREATE TABLE IF NOT EXISTS classes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    description TEXT,
+    professor_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    join_code VARCHAR(16) UNIQUE,
+    join_code_enabled BOOLEAN DEFAULT true,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_classes_professor ON classes(professor_id);
+CREATE INDEX IF NOT EXISTS idx_classes_join_code ON classes(join_code) WHERE join_code IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS class_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    enrolled_via VARCHAR(20) NOT NULL CHECK (enrolled_via IN ('join_code', 'professor', 'admin')),
+    enrolled_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (class_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_class_members_user ON class_members(user_id);
+
+CREATE TABLE IF NOT EXISTS class_topics (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    parent_topic_id UUID REFERENCES class_topics(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    embedding JSONB,
+    position INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE NULLS NOT DISTINCT (class_id, parent_topic_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_class_topics_class ON class_topics(class_id);
 
 -- ===========================================
 -- SESSIONS (Metadata - actual sessions in Redis)
@@ -35,6 +84,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     session_token VARCHAR(255) UNIQUE NOT NULL,
     subject VARCHAR(255) DEFAULT 'Machine Learning',
+    active_class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -60,6 +110,7 @@ CREATE TABLE IF NOT EXISTS books (
         CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
     processing_method VARCHAR(50) DEFAULT NULL,
     error_message TEXT,
+    owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     processed_at TIMESTAMP WITH TIME ZONE,
@@ -68,6 +119,17 @@ CREATE TABLE IF NOT EXISTS books (
 
 CREATE INDEX IF NOT EXISTS idx_books_status ON books(processing_status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_books_hash ON books(file_hash) WHERE file_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_books_owner ON books(owner_user_id);
+
+CREATE TABLE IF NOT EXISTS class_books (
+    class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    book_id UUID NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    added_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (class_id, book_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_class_books_book ON class_books(book_id);
 
 -- ===========================================
 -- CHAPTERS
@@ -119,6 +181,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
     subject VARCHAR(255),
     title VARCHAR(255),
     message_count INTEGER DEFAULT 0,
@@ -128,6 +191,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_class ON conversations(class_id);
 
 -- ===========================================
 -- MESSAGES
@@ -149,6 +213,21 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_intent ON messages(intent);
+
+-- ===========================================
+-- MESSAGE TOPICS (Analytics - query-to-topic assignments)
+-- ===========================================
+
+CREATE TABLE IF NOT EXISTS message_topics (
+    message_id UUID PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    class_id UUID REFERENCES classes(id) ON DELETE CASCADE,
+    topic_id UUID REFERENCES class_topics(id) ON DELETE SET NULL,
+    similarity FLOAT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_topics_class_created ON message_topics(class_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_message_topics_topic ON message_topics(topic_id);
 
 -- ===========================================
 -- CHUNK RETRIEVALS (Analytics - tracks which chunks are retrieved)
@@ -256,6 +335,16 @@ CREATE TRIGGER update_conversations_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_classes_updated_at
+    BEFORE UPDATE ON classes
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_class_topics_updated_at
+    BEFORE UPDATE ON class_topics
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 -- ===========================================
 -- VIEWS
 -- ===========================================
@@ -291,3 +380,8 @@ COMMENT ON TABLE messages IS 'Chat message history with intent and model metadat
 COMMENT ON TABLE chunk_retrievals IS 'Analytics tracking which chunks are retrieved in searches';
 COMMENT ON TABLE processing_jobs IS 'Async job tracking for PDF processing';
 COMMENT ON TABLE usage_stats IS 'User activity and usage analytics';
+COMMENT ON TABLE classes IS 'Classes owned by professors, grouping students, books and topics';
+COMMENT ON TABLE class_members IS 'Student enrollment in classes with enrollment method';
+COMMENT ON TABLE class_books IS 'Books attached to a class (the student-visible library)';
+COMMENT ON TABLE class_topics IS 'Per-class topic/subtopic tree with embedding vectors for query matching';
+COMMENT ON TABLE message_topics IS 'Async query-to-topic assignments; NULL topic_id = unclassified';
