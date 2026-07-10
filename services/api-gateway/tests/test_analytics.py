@@ -195,15 +195,16 @@ async def test_summary_is_env_gated_and_generates_when_enabled(
     monkeypatch.setattr(settings, "analytics_summary_enabled", True)
     monkeypatch.setattr(summary_module, "build_model", lambda *a, **k: TestModel())
 
+    # Range excludes the January query — proves the dates actually parse
     r = await client.post(
         url,
-        json={"from": "2026-01-01", "to": "2026-12-31"},
+        json={"date_from": "2026-02-01", "date_to": "2026-12-31"},
         headers=auth(professor["token"]),
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["summary"]
-    assert body["total_queries"] == 4
+    assert body["total_queries"] == 3
 
 
 async def test_system_status_reports_each_service(client, admin_token, guest_token):

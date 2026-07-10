@@ -5,7 +5,7 @@ are invisible to and untouchable by this router.
 """
 
 from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile, File, Form, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional
 import logging
 
@@ -212,8 +212,8 @@ async def manager_list_professors(
 # ===========================================
 
 class ManagerSummaryRequest(BaseModel):
-    date_from: Optional[str] = Field(default=None, alias="from")
-    date_to: Optional[str] = Field(default=None, alias="to")
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
 
 
 @router.get("/classes/{class_id}/analytics/topics")

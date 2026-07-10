@@ -9,7 +9,7 @@ from uuid import UUID
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import logging
 
 from app.config import settings
@@ -537,8 +537,8 @@ async def pdf_job_status(
 # ===========================================
 
 class SummaryRequest(BaseModel):
-    date_from: Optional[str] = Field(default=None, alias="from")
-    date_to: Optional[str] = Field(default=None, alias="to")
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
 
 
 @router.get("/classes/{class_id}/analytics/topics")
