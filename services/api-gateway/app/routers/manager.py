@@ -4,7 +4,8 @@ Managers handle students and professors only — admin and manager accounts
 are invisible to and untouchable by this router.
 """
 
-from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile, File, Form, Query
+from pydantic import BaseModel, Field
 from typing import List, Optional
 import logging
 
@@ -15,10 +16,13 @@ from app.models.schemas import (
     AssignStudentRequest, ClassCreateAdmin, ClassUpdate,
     UserCreate, UserUpdate, UserResponse, UserImportResponse,
 )
+from app.config import settings
 from app.routers.admin_classes import (
     assign_student, create_class_for_professor, list_all_classes, list_professors,
 )
-from app.services import class_service, user_service, user_import
+from app.services import (
+    analytics_summary, class_analytics, class_service, user_service, user_import,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -201,3 +205,73 @@ async def manager_list_professors(
     request: Request, session: dict = Depends(get_manager_session)
 ):
     return await list_professors(request.app.state.db_pool)
+
+
+# ===========================================
+# Analytics (read-only, any class)
+# ===========================================
+
+class ManagerSummaryRequest(BaseModel):
+    date_from: Optional[str] = Field(default=None, alias="from")
+    date_to: Optional[str] = Field(default=None, alias="to")
+
+
+@router.get("/classes/{class_id}/analytics/topics")
+async def manager_analytics_topics(
+    request: Request,
+    class_id: str,
+    date_from: Optional[str] = Query(default=None, alias="from"),
+    date_to: Optional[str] = Query(default=None, alias="to"),
+    session: dict = Depends(get_manager_session),
+):
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_class(conn, class_id)
+    return await class_analytics.topic_ranking(
+        request.app.state.db_pool, class_id, date_from, date_to
+    )
+
+
+@router.get("/classes/{class_id}/analytics/topics/{topic_id}/queries")
+async def manager_analytics_topic_queries(
+    request: Request,
+    class_id: str,
+    topic_id: str,
+    date_from: Optional[str] = Query(default=None, alias="from"),
+    date_to: Optional[str] = Query(default=None, alias="to"),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: dict = Depends(get_manager_session),
+):
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_class(conn, class_id)
+    return await class_analytics.topic_queries(
+        request.app.state.db_pool, class_id, topic_id, date_from, date_to, limit
+    )
+
+
+@router.post("/classes/{class_id}/analytics/summary")
+async def manager_analytics_summary(
+    request: Request,
+    class_id: str,
+    body: ManagerSummaryRequest,
+    session: dict = Depends(get_manager_session),
+):
+    if not settings.analytics_summary_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Analytics summary is disabled (ANALYTICS_SUMMARY_ENABLED)",
+        )
+    async with request.app.state.db_pool.acquire() as conn:
+        cls = await class_service.get_class(conn, class_id)
+    return await analytics_summary.generate_summary(
+        request.app.state.db_pool, class_id, cls["subject"],
+        body.date_from, body.date_to,
+    )
+
+
+@router.get("/features")
+async def manager_features(session: dict = Depends(get_manager_session)):
+    """Feature flags the manager UI needs."""
+    return {
+        "summary_enabled": settings.analytics_summary_enabled,
+        "admin_assign_enabled": settings.enrollment_admin_assign_enabled,
+    }

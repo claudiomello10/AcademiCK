@@ -105,6 +105,76 @@ async def update_user_status(
 
 
 # ===========================================
+# System Status
+# ===========================================
+
+@router.get("/system/status")
+async def system_status(request: Request, session: dict = Depends(get_admin_session)):
+    """Per-service health: infra probes + HTTP health checks, concurrently."""
+    import asyncio
+    import time
+
+    import httpx
+
+    from app.services.pdf_upload import PDF_SERVICE_URL
+
+    async def probe(name: str, check) -> dict:
+        start = time.monotonic()
+        try:
+            detail = await asyncio.wait_for(check(), timeout=3.0)
+            return {
+                "name": name,
+                "status": "healthy",
+                "latency_ms": round((time.monotonic() - start) * 1000, 1),
+                "detail": detail or "",
+            }
+        except Exception as e:
+            return {
+                "name": name,
+                "status": "down",
+                "latency_ms": round((time.monotonic() - start) * 1000, 1),
+                "detail": str(e) or type(e).__name__,
+            }
+
+    async def check_postgres():
+        async with request.app.state.db_pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+
+    async def check_redis():
+        await request.app.state.redis.ping()
+
+    async def check_qdrant():
+        info = await request.app.state.qdrant.get_collection_info()
+        if not info:
+            raise RuntimeError("collection unavailable")
+        return f"{info.get('points_count', 0)} points"
+
+    def check_http(base_url: str):
+        async def _check():
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.get(f"{base_url}/health")
+                r.raise_for_status()
+                body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                status = body.get("status", "")
+                if status and status not in ("healthy", "ok"):
+                    raise RuntimeError(f"reports status '{status}'")
+                return status
+        return _check
+
+    services = await asyncio.gather(
+        probe("postgres", check_postgres),
+        probe("redis", check_redis),
+        probe("qdrant", check_qdrant),
+        probe("pdf-service", check_http(PDF_SERVICE_URL)),
+        probe("intent-service", check_http(settings.intent_service_url)),
+        probe("embedding-service", check_http(settings.embedding_service_url)),
+    )
+
+    overall = "healthy" if all(s["status"] == "healthy" for s in services) else "degraded"
+    return {"overall": overall, "services": list(services)}
+
+
+# ===========================================
 # Statistics
 # ===========================================
 

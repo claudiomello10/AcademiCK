@@ -6,7 +6,10 @@ which 403s unless the session user owns it (admins own all).
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Request, HTTPException, Query
+from pydantic import BaseModel, Field
 import logging
 
 from app.config import settings
@@ -19,7 +22,7 @@ from app.models.schemas import (
     AddStudentRequest, ClassCreate, ClassUpdate, JoinCodeToggleRequest,
     TopicCreate, TopicUpdate,
 )
-from app.services import class_service, pdf_upload
+from app.services import analytics_summary, class_analytics, class_service, pdf_upload
 from app.services.topic_classifier import embedding_text
 
 router = APIRouter()
@@ -526,6 +529,70 @@ async def pdf_job_status(
 
     return await pdf_upload.sync_job_status(
         request.app.state.db_pool, request.app.state.qdrant, job_id
+    )
+
+
+# ===========================================
+# Analytics
+# ===========================================
+
+class SummaryRequest(BaseModel):
+    date_from: Optional[str] = Field(default=None, alias="from")
+    date_to: Optional[str] = Field(default=None, alias="to")
+
+
+@router.get("/classes/{class_id}/analytics/topics")
+async def analytics_topics(
+    request: Request,
+    class_id: str,
+    date_from: Optional[str] = Query(default=None, alias="from"),
+    date_to: Optional[str] = Query(default=None, alias="to"),
+    session: dict = Depends(get_professor_session),
+):
+    """Topic trouble ranking: query counts per topic/subtopic."""
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_owned_class(conn, class_id, session)
+    return await class_analytics.topic_ranking(
+        request.app.state.db_pool, class_id, date_from, date_to
+    )
+
+
+@router.get("/classes/{class_id}/analytics/topics/{topic_id}/queries")
+async def analytics_topic_queries(
+    request: Request,
+    class_id: str,
+    topic_id: str,
+    date_from: Optional[str] = Query(default=None, alias="from"),
+    date_to: Optional[str] = Query(default=None, alias="to"),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: dict = Depends(get_professor_session),
+):
+    """The actual query texts behind a topic ('unclassified' supported)."""
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_owned_class(conn, class_id, session)
+    return await class_analytics.topic_queries(
+        request.app.state.db_pool, class_id, topic_id, date_from, date_to, limit
+    )
+
+
+@router.post("/classes/{class_id}/analytics/summary")
+async def analytics_summary_digest(
+    request: Request,
+    class_id: str,
+    body: SummaryRequest,
+    session: dict = Depends(get_professor_session),
+):
+    """LLM digest for a professor-chosen date range. Env-gated, on demand."""
+    if not settings.analytics_summary_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Analytics summary is disabled (ANALYTICS_SUMMARY_ENABLED)",
+        )
+    async with request.app.state.db_pool.acquire() as conn:
+        cls = await class_service.get_owned_class(conn, class_id, session)
+    return await analytics_summary.generate_summary(
+        request.app.state.db_pool, class_id, cls["subject"],
+        body.date_from, body.date_to,
     )
 
 
