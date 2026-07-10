@@ -2,20 +2,86 @@
 
 import asyncio
 import time
-import re
-from typing import Dict, List, Optional, Any
+from typing import Awaitable, Callable, Dict, List, Optional, Any
 import logging
+
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from app.clients.intent_client import IntentClient
 from app.clients.embedding_client import EmbeddingClient
 from app.clients.qdrant_client import QdrantManager
 from app.services.search_service import SearchService
-from app.services.llm_service import LLMService
-from app.services.prompt_engineering import get_rag_system_prompt, get_enhanced_query_prompt
+from app.services.agent_models import build_model
+from app.services.prompt_engineering import (
+    get_rag_system_prompt,
+    get_enhancement_system_prompt,
+)
+from app.services.reasoning_agent import CurationAgent
 from redis import asyncio as aioredis
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class ResolvedQuery(BaseModel):
+    """Structured output of the query resolution agent."""
+
+    resolved_query: str = Field(
+        description=(
+            "Student's question with all pronouns and references resolved "
+            "using conversation history. Minimal rewrite — no elaboration."
+        )
+    )
+
+
+def _to_pydantic_ai_history(
+    messages: Optional[List[Dict]], limit: int = 6
+) -> List[ModelMessage]:
+    """Convert our list-of-dicts conversation history to Pydantic AI messages."""
+    if not messages:
+        return []
+    history: List[ModelMessage] = []
+    for msg in messages[-limit:]:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "assistant":
+            history.append(ModelResponse(parts=[TextPart(content=content)]))
+        else:
+            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+    return history
+
+
+# Progress callback type: producers in the pipeline emit small dict events.
+# The SSE endpoint provides a queue-feeding callback; non-streaming callers
+# pass None and get a no-op.
+ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
+
+
+async def _noop_progress(_: Dict[str, Any]) -> None:
+    pass
+
+
+# Portuguese labels emitted with each stage. The UI just renders these
+# verbatim — backend can tweak copy without a frontend ship.
+STAGE_LABELS = {
+    "intent": "Entendendo pergunta...",
+    "enhancing": "Interpretando a pergunta...",
+    "generating": "Gerando resposta...",
+}
+
+NO_CONTEXT_MESSAGE = (
+    "Não encontrei informações relevantes nos livros disponíveis para "
+    "responder a sua pergunta. Tente reformular a pergunta ou perguntar "
+    "sobre outro tópico."
+)
 
 
 class RAGOrchestrator:
@@ -35,68 +101,37 @@ class RAGOrchestrator:
             embedding_client=embedding_client,
             redis=redis
         )
-        self.llm_service = LLMService()
 
-    async def _generate_enhanced_queries(
+    async def _resolve_query(
         self,
         query: str,
         subject: str,
         conversation_history: Optional[List[Dict]] = None
-    ) -> List[Dict[str, Optional[str]]]:
-        """
-        Generate multiple focused search queries from the user query.
-        Uses a fast model (GPT-5 Nano) for query enhancement.
-
-        Returns:
-            List of {"query": str, "book": Optional[str]}
-        """
+    ) -> str:
+        """Resolve references in the user query (e.g. "that" -> the actual topic)
+        using conversation history. Retrieval itself is handled by the curation
+        agent's tools, so this only summarizes/resolves the task."""
         try:
-            # Get available books
-            available_books = await self.qdrant.get_books()
-
-            # Generate enhancement prompt
-            prompt = get_enhanced_query_prompt(
-                query=query,
-                subject=subject,
-                available_books=available_books,
-                conversation_history=conversation_history
+            agent = Agent(
+                model=build_model(
+                    settings.query_enhancement_model,
+                    settings.query_enhancement_reasoning,
+                ),
+                output_type=ResolvedQuery,
+                system_prompt=get_enhancement_system_prompt(subject),
             )
 
-            # Call LLM for query enhancement
-            messages = [{"role": "user", "content": prompt}]
-            llm_result = await self.llm_service.generate(
-                messages=messages,
-                model=settings.query_enhancement_model,
-                temperature=0.3  # Lower temperature for more focused queries
+            result = await agent.run(
+                query,
+                message_history=_to_pydantic_ai_history(conversation_history),
             )
-            response = llm_result["text"]
-
-            logger.debug(f"Query enhancement response: {response}")
-
-            # Parse the XML-like response
-            retrievals = []
-            for i in range(1, 4):
-                pattern = f'<retrieval{i} book="([^"]+)">(.*?)</retrieval{i}>'
-                match = re.search(pattern, response, re.DOTALL)
-                if match:
-                    book = match.group(1).strip()
-                    retrieval_query = match.group(2).strip()
-
-                    # Convert "all" to None for no book filter
-                    if book.lower() == "all":
-                        book = None
-
-                    retrievals.append({
-                        "query": retrieval_query,
-                        "book": book
-                    })
-
-            logger.info(f"Generated {len(retrievals)} enhanced queries: {retrievals}")
-            return retrievals if retrievals else [{"query": query, "book": None}]
+            output: ResolvedQuery = result.output
+            logger.info(f"Resolved query: '{output.resolved_query}'")
+            return output.resolved_query or query
 
         except Exception as e:
-            logger.warning(f"Query enhancement failed, using original query: {e}")
-            return [{"query": query, "book": None}]
+            logger.warning(f"Query resolution failed, using original query: {e}")
+            return query
 
     async def process_query(
         self,
@@ -104,85 +139,129 @@ class RAGOrchestrator:
         subject: str = settings.default_subject,
         conversation_history: Optional[List[Dict]] = None,
         model: Optional[str] = None,
-        book_filter: Optional[str] = None
+        progress: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
-        """
-        Process a user query through the RAG pipeline.
+        """Process a user query through the RAG pipeline.
 
-        Args:
-            query: User's question
-            subject: Study subject
-            conversation_history: Previous messages for context
-            model: LLM model to use
-            book_filter: Optional book to filter search
-
-        Returns:
-            Dict containing response, intent, sources, and metadata
+        If `progress` is provided, the orchestrator awaits it at each
+        pipeline boundary with small dict events of the form
+        `{"type": "status"|"token", ...}`. Non-streaming callers pass None
+        and the callback is a no-op — behavior is otherwise identical.
         """
+        emit = progress or _noop_progress
         start_time = time.time()
 
-        # Step 1: Classify intent
-        intent_task = asyncio.create_task(
-            self.intent_client.classify(query)
+        # Step 1+2: intent classification and query resolution run concurrently.
+        await emit({"type": "status", "stage": "intent", "label": STAGE_LABELS["intent"]})
+        intent_task = asyncio.create_task(self.intent_client.classify(query))
+
+        await emit({"type": "status", "stage": "enhancing", "label": STAGE_LABELS["enhancing"]})
+        resolve_task = asyncio.create_task(
+            self._resolve_query(query, subject, conversation_history)
         )
 
-        # Step 2: Generate enhanced queries (concurrent with intent)
-        enhanced_queries_task = asyncio.create_task(
-            self._generate_enhanced_queries(query, subject, conversation_history)
-        )
-
-        # Wait for intent classification
         intent_result = await intent_task
         intent = intent_result.get("intent", "question_answering")
-
-        # Adjust top_k based on intent
-        top_k = 12 if intent == "searching_for_information" else 6
-
-        # Wait for enhanced queries
-        enhanced_queries = await enhanced_queries_task
-
-        # Step 3: Search with enhanced queries
-        search_results = await self.search_service.search_with_enhanced_queries(
-            queries=enhanced_queries,
-            intent=intent,
-            top_k=top_k
+        top_k = (
+            settings.top_k_searching
+            if intent == "searching_for_information"
+            else settings.top_k_default
         )
 
-        # Step 4: Build prompt with context
-        system_prompt = get_rag_system_prompt(
+        resolved_query = await resolve_task
+
+        # Step 3: agentic curation. The agent does all retrieval through its
+        # tools (search, list_chapters, ...) and forwards its own status events.
+        agent = CurationAgent(
+            search_service=self.search_service,
+            qdrant=self.qdrant,
+        )
+        agent_result = await agent.run(
+            query=resolved_query,
             intent=intent,
             subject=subject,
-            context_chunks=search_results
+            initial_chunks=[],
+            top_k=top_k,
+            progress=emit,
         )
+        curated_chunks = agent_result.final_chunks
 
-        # Build messages
-        messages = [{"role": "system", "content": system_prompt}]
+        # Step 5: stream the final answer. Tokens are emitted live so the
+        # UI can render the response as it's generated.
+        await emit({
+            "type": "status",
+            "stage": "generating",
+            "label": STAGE_LABELS["generating"],
+        })
 
-        # Add conversation history (last few messages for context)
-        if conversation_history:
-            for msg in conversation_history[-6:]:  # Last 6 messages
-                if msg.get("role") in ["user", "assistant"]:
-                    messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
+        model_name = model or settings.default_model_frontend
+        response: str = ""
+        tokens_used: Optional[int] = None
 
-        # Add current query
-        messages.append({"role": "user", "content": query})
-
-        # Step 5: Generate response
-        tokens_used = None
-        try:
-            llm_result = await self.llm_service.generate(
-                messages=messages,
-                model=model,
-                temperature=0.7
+        if not curated_chunks:
+            # No grounding context survived retrieval/curation — serve the fixed
+            # "not found" message instead of letting the model answer blind.
+            logger.info("No context after retrieval/curation — serving not-found message")
+            response = NO_CONTEXT_MESSAGE
+            await emit({"type": "token", "text": response})
+        else:
+            system_prompt = get_rag_system_prompt(
+                intent=intent,
+                subject=subject,
+                context_chunks=curated_chunks,
             )
-            response = llm_result["text"]
-            tokens_used = llm_result.get("total_tokens")
-        except Exception as e:
-            logger.error(f"LLM generation failed: {e}")
-            response = "I apologize, but I encountered an error generating a response. Please try again."
+            answer_agent = Agent(
+                model=build_model(model_name, settings.rag_reasoning),
+                output_type=str,
+                system_prompt=system_prompt,
+            )
+            history = _to_pydantic_ai_history(conversation_history)
+
+            logger.info(
+                f"Generating answer (model={model_name}, "
+                f"context={len(curated_chunks)} chunks)"
+            )
+            answer_start = time.time()
+            try:
+                parts: List[str] = []
+                async with answer_agent.run_stream(
+                    query, message_history=history
+                ) as run:
+                    async for delta in run.stream_text(delta=True):
+                        parts.append(delta)
+                        await emit({"type": "token", "text": delta})
+                    usage = run.usage
+                    tokens_used = usage.total_tokens if usage else None
+                response = "".join(parts)
+                logger.info(
+                    f"Answer generated in {(time.time() - answer_start) * 1000:.0f}ms "
+                    f"({tokens_used} tokens)"
+                )
+
+                # If the stream produced nothing, retry once non-streaming.
+                if not response:
+                    logger.warning(
+                        f"Empty streamed response, retrying non-streaming: "
+                        f"model={model_name}, intent={intent}"
+                    )
+                    result = await answer_agent.run(query, message_history=history)
+                    response = result.output or ""
+                    usage = result.usage
+                    tokens_used = usage.total_tokens if usage else None
+                    if response:
+                        await emit({"type": "token", "text": response})
+
+                if not response:
+                    logger.error(
+                        f"Empty LLM response after retry: "
+                        f"model={model_name}, intent={intent}"
+                    )
+                    response = "I apologize, but I was unable to generate a response. Please try again."
+                    await emit({"type": "token", "text": response})
+            except Exception as e:
+                logger.error(f"LLM generation failed: {e}")
+                response = "I apologize, but I encountered an error generating a response. Please try again."
+                await emit({"type": "token", "text": response})
 
         processing_time = (time.time() - start_time) * 1000
 
@@ -198,20 +277,31 @@ class RAGOrchestrator:
                     "topic": chunk.get("topic"),
                     "score": chunk["score"]
                 }
-                for chunk in search_results
+                for chunk in curated_chunks
             ],
-            # Full search results with IDs for chunk retrieval tracking (analytics)
-            "search_results": search_results,
-            "model_used": model or "gpt-5-nano",
-            "processing_time_ms": processing_time
+            # Curated chunks with IDs for chunk retrieval tracking (analytics).
+            # Synthetic outline chunks (no real chunk id) are excluded.
+            "search_results": [
+                c for c in curated_chunks if c.get("chunk_id") != "synthetic"
+            ],
+            "model_used": model_name,
+            "processing_time_ms": processing_time,
+            "agent_actions": agent_result.actions_used,
+            "agent_tool_calls": agent_result.tool_calls,
+            "agent_pool_chunks": agent_result.pool_chunks,
+            "agent_dropped_chunks": agent_result.dropped_chunks,
+            "agent_final_chunks": len(curated_chunks),
+            "agent_not_in_kb": agent_result.not_found,
+            "agent_tokens": agent_result.total_agent_tokens,
+            "agent_time_ms": agent_result.agent_time_ms,
+            "reasoning_trace": agent_result.reasoning_trace,
         }
 
     async def process_single_query(
         self,
         query: str,
         subject: str = settings.default_subject,
-        model: Optional[str] = None,
-        book_filter: Optional[str] = None
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a single query without conversation history.
@@ -222,6 +312,5 @@ class RAGOrchestrator:
             query=query,
             subject=subject,
             conversation_history=None,
-            model=model,
-            book_filter=book_filter
+            model=model
         )

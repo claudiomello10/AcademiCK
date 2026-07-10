@@ -1,10 +1,11 @@
 """Admin endpoints."""
 
-from fastapi import APIRouter, Request, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, Request, HTTPException, UploadFile, File
 from typing import List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
+from app.dependencies import get_admin_session
 from app.models.schemas import (
     UserCreate, UserUpdate, UserResponse,
     ContentStats, UsageStats, ProcessingJobResponse
@@ -16,27 +17,13 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def require_admin(request: Request, session_id: str):
-    """Verify admin role for session."""
-    session = await request.app.state.session_service.get_session(session_id)
-
-    if not session:
-        raise HTTPException(status_code=401, detail="Invalid session")
-
-    if session.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    return session
-
-
 # ===========================================
 # User Management
 # ===========================================
 
 @router.get("/users", response_model=List[UserResponse])
-async def list_users(request: Request, session_id: str):
+async def list_users(request: Request, session: dict = Depends(get_admin_session)):
     """List all users (admin only)."""
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         users = await conn.fetch("""
@@ -61,9 +48,8 @@ async def list_users(request: Request, session_id: str):
 
 
 @router.post("/users", response_model=UserResponse)
-async def create_user(request: Request, session_id: str, user: UserCreate):
+async def create_user(request: Request, user: UserCreate, session: dict = Depends(get_admin_session)):
     """Create a new user (admin only)."""
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         # Check if username exists
@@ -99,12 +85,11 @@ async def create_user(request: Request, session_id: str, user: UserCreate):
 @router.put("/users/{user_id}", response_model=UserResponse)
 async def update_user(
     request: Request,
-    session_id: str,
     user_id: str,
-    updates: UserUpdate
+    updates: UserUpdate,
+    session: dict = Depends(get_admin_session)
 ):
     """Update a user (admin only)."""
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         # Build update query dynamically
@@ -161,12 +146,11 @@ async def update_user(
 @router.put("/users/{user_id}/status")
 async def update_user_status(
     request: Request,
-    session_id: str,
     user_id: str,
-    status_update: dict
+    status_update: dict,
+    session: dict = Depends(get_admin_session)
 ):
     """Update a user's status (admin only)."""
-    await require_admin(request, session_id)
 
     new_status = status_update.get("status")
     if new_status not in ["active", "inactive"]:
@@ -196,9 +180,8 @@ async def update_user_status(
 # ===========================================
 
 @router.get("/stats/content", response_model=ContentStats)
-async def get_content_stats(request: Request, session_id: str):
+async def get_content_stats(request: Request, session: dict = Depends(get_admin_session)):
     """Get content statistics (admin only)."""
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         stats = await conn.fetchrow("""
@@ -220,7 +203,7 @@ async def get_content_stats(request: Request, session_id: str):
 
 
 @router.get("/stats/chunks")
-async def get_chunk_retrieval_stats(request: Request, session_id: str, range: str = "7d"):
+async def get_chunk_retrieval_stats(request: Request, range: str = "7d", session: dict = Depends(get_admin_session)):
     """Get chunk retrieval statistics - which content is most accessed (admin only).
 
     Provides analytics on which books and chapters are most frequently retrieved
@@ -229,7 +212,6 @@ async def get_chunk_retrieval_stats(request: Request, session_id: str, range: st
     Query params:
         range: "7d" (default), "30d", or "all"
     """
-    await require_admin(request, session_id)
 
     # Calculate date range
     if range == "7d":
@@ -364,11 +346,10 @@ async def get_chunk_retrieval_stats(request: Request, session_id: str, range: st
 
 
 @router.get("/stats/usage", response_model=UsageStats)
-async def get_usage_stats(request: Request, session_id: str):
+async def get_usage_stats(request: Request, session: dict = Depends(get_admin_session)):
     """Get usage statistics (admin only)."""
-    await require_admin(request, session_id)
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
 
     async with request.app.state.db_pool.acquire() as conn:
         # Total queries
@@ -417,20 +398,18 @@ async def get_usage_stats(request: Request, session_id: str):
 # ===========================================
 
 @router.get("/jobs")
-async def list_jobs(request: Request, session_id: str):
+async def list_jobs(request: Request, session: dict = Depends(get_admin_session)):
     """List recent processing jobs (admin only).
 
-    Returns jobs from last 12 hours, limited to 10 most recent.
-    Excludes dismissed jobs.
-    Syncs with Celery for in-progress jobs.
+    Returns jobs from the last 12 hours, active (pending/processing) first so
+    a batch upload can't push a running job out of the list — the Celery sync
+    below only covers returned jobs. Excludes dismissed jobs.
     """
     import httpx
     import json as json_lib
 
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
-        # Get jobs from last 12 hours, limit to 10, exclude dismissed
         jobs = await conn.fetch("""
             SELECT
                 j.id, j.job_type, j.status, j.progress, j.error_message,
@@ -439,8 +418,8 @@ async def list_jobs(request: Request, session_id: str):
             LEFT JOIN books b ON j.book_id = b.id
             WHERE j.created_at > NOW() - INTERVAL '12 hours'
               AND (j.metadata->>'dismissed' IS NULL OR j.metadata->>'dismissed' != 'true')
-            ORDER BY j.created_at DESC
-            LIMIT 10
+            ORDER BY (j.status IN ('pending', 'processing')) DESC, j.created_at ASC
+            LIMIT 50
         """)
 
         result = []
@@ -461,7 +440,7 @@ async def list_jobs(request: Request, session_id: str):
                 warning = None
 
                 # Sync with Celery for in-progress jobs
-                if status in ("queued", "processing") and celery_task_id:
+                if status in ("pending", "processing") and celery_task_id:
                     try:
                         response = await client.get(f"http://pdf-service:8003/job/{celery_task_id}")
                         if response.status_code == 200:
@@ -486,6 +465,8 @@ async def list_jobs(request: Request, session_id: str):
                                         SET status = $1, progress = $2, completed_at = NOW()
                                         WHERE id = $3
                                     """, status, progress, j["id"])
+                                    # New content just landed in Qdrant
+                                    request.app.state.qdrant.invalidate_catalog_cache()
                                 elif status == "failed":
                                     await conn.execute("""
                                         UPDATE processing_jobs
@@ -520,9 +501,8 @@ async def list_jobs(request: Request, session_id: str):
 
 
 @router.get("/jobs/{job_id}", response_model=ProcessingJobResponse)
-async def get_job(request: Request, session_id: str, job_id: str):
+async def get_job(request: Request, job_id: str, session: dict = Depends(get_admin_session)):
     """Get status of a specific job (admin only)."""
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         job = await conn.fetchrow("""
@@ -554,12 +534,11 @@ async def get_job(request: Request, session_id: str, job_id: str):
 # ===========================================
 
 @router.get("/system/info")
-async def get_system_info(request: Request, session_id: str):
+async def get_system_info(request: Request, session: dict = Depends(get_admin_session)):
     """Get system information (admin only)."""
-    await require_admin(request, session_id)
 
     # Get Qdrant info
-    qdrant_info = request.app.state.qdrant.get_collection_info()
+    qdrant_info = await request.app.state.qdrant.get_collection_info()
 
     # Get active sessions count
     active_sessions = await request.app.state.session_service.get_active_sessions_count()
@@ -579,12 +558,11 @@ async def get_system_info(request: Request, session_id: str):
 # ===========================================
 
 @router.get("/content-stats")
-async def get_content_stats_alias(request: Request, session_id: str):
+async def get_content_stats_alias(request: Request, session: dict = Depends(get_admin_session)):
     """Get content statistics - frontend compatible endpoint."""
-    await require_admin(request, session_id)
 
     # Get stats from Qdrant since PostgreSQL tables might be empty
-    qdrant_info = request.app.state.qdrant.get_collection_info()
+    qdrant_info = await request.app.state.qdrant.get_collection_info()
     books = await request.app.state.qdrant.get_books()
 
     # Handle vectors_count - it might be a dict for named vectors collections
@@ -605,9 +583,8 @@ async def get_content_stats_alias(request: Request, session_id: str):
 
 
 @router.get("/book-list")
-async def get_book_list(request: Request, session_id: str):
+async def get_book_list(request: Request, session: dict = Depends(get_admin_session)):
     """Get list of books with stats from PostgreSQL."""
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         books = await conn.fetch("""
@@ -615,10 +592,11 @@ async def get_book_list(request: Request, session_id: str):
                 b.name,
                 COUNT(DISTINCT c.id) as total_chapters,
                 COALESCE(b.total_chunks, 0) as total_chunks,
-                b.processing_status
+                b.processing_status,
+                b.processing_method
             FROM books b
             LEFT JOIN chapters c ON b.id = c.book_id
-            GROUP BY b.id, b.name, b.total_chunks, b.processing_status
+            GROUP BY b.id, b.name, b.total_chunks, b.processing_status, b.processing_method
             ORDER BY b.name
         """)
 
@@ -627,18 +605,18 @@ async def get_book_list(request: Request, session_id: str):
                 "name": book["name"],
                 "total_chapters": book["total_chapters"],
                 "total_chunks": book["total_chunks"],
-                "processing_status": book["processing_status"]
+                "processing_status": book["processing_status"],
+                "processing_method": book["processing_method"]
             }
             for book in books
         ]
 
 
 @router.get("/usage-stats")
-async def get_usage_stats_alias(request: Request, session_id: str, range: str = "7d"):
+async def get_usage_stats_alias(request: Request, range: str = "7d", session: dict = Depends(get_admin_session)):
     """Get usage statistics - frontend compatible endpoint."""
-    await require_admin(request, session_id)
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
 
     # Calculate date range
     if range == "7d":
@@ -685,9 +663,8 @@ async def get_usage_stats_alias(request: Request, session_id: str, range: str = 
 
 
 @router.delete("/books/{book_name}")
-async def delete_book(request: Request, session_id: str, book_name: str):
+async def delete_book(request: Request, book_name: str, session: dict = Depends(get_admin_session)):
     """Delete a book and all its embeddings (admin only)."""
-    await require_admin(request, session_id)
 
     try:
         # Delete from Qdrant
@@ -714,12 +691,11 @@ async def delete_book(request: Request, session_id: str, book_name: str):
 
 
 @router.post("/upload-pdfs")
-async def upload_pdfs(request: Request, session_id: str):
+async def upload_pdfs(request: Request, session: dict = Depends(get_admin_session)):
     """Upload PDFs for processing via pdf-service."""
     import httpx
     import json as json_lib
 
-    await require_admin(request, session_id)
 
     # Get the form data from the request
     form = await request.form()
@@ -755,7 +731,7 @@ async def upload_pdfs(request: Request, session_id: str):
                             pg_job_id = await conn.fetchval("""
                                 INSERT INTO processing_jobs
                                     (job_type, status, progress, metadata, created_at)
-                                VALUES ('pdf_processing', 'queued', 0, $1, NOW())
+                                VALUES ('pdf_processing', 'pending', 0, $1, NOW())
                                 RETURNING id
                             """, json_lib.dumps({
                                 "celery_task_id": celery_task_id,
@@ -766,7 +742,7 @@ async def upload_pdfs(request: Request, session_id: str):
                             "filename": file.filename,
                             "job_id": str(pg_job_id),  # Return PostgreSQL job ID
                             "celery_task_id": celery_task_id,
-                            "status": "queued"
+                            "status": "pending"
                         })
                     else:
                         errors.append({
@@ -789,12 +765,11 @@ async def upload_pdfs(request: Request, session_id: str):
 
 
 @router.get("/pdf-job/{job_id}")
-async def get_pdf_job_status(request: Request, session_id: str, job_id: str):
+async def get_pdf_job_status(request: Request, job_id: str, session: dict = Depends(get_admin_session)):
     """Get PDF processing job status - syncs PostgreSQL with Celery."""
     import httpx
     import json as json_lib
 
-    await require_admin(request, session_id)
 
     # First, get job from PostgreSQL
     async with request.app.state.db_pool.acquire() as conn:
@@ -815,7 +790,7 @@ async def get_pdf_job_status(request: Request, session_id: str, job_id: str):
         filename = metadata.get("filename", "unknown")
 
         # If job is still in progress, query Celery for live status
-        if job["status"] in ("queued", "processing") and celery_task_id:
+        if job["status"] in ("pending", "processing") and celery_task_id:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(f"http://pdf-service:8003/job/{celery_task_id}")
@@ -848,6 +823,8 @@ async def get_pdf_job_status(request: Request, session_id: str, job_id: str):
                                     SET status = $1, progress = $2, completed_at = NOW()
                                     WHERE id = $3
                                 """, new_status, new_progress, job_id)
+                                # New content just landed in Qdrant
+                                request.app.state.qdrant.invalidate_catalog_cache()
                             elif new_status == "failed":
                                 await conn.execute("""
                                     UPDATE processing_jobs
@@ -890,12 +867,11 @@ async def get_pdf_job_status(request: Request, session_id: str, job_id: str):
 
 
 @router.delete("/jobs/{job_id}")
-async def dismiss_job(request: Request, session_id: str, job_id: str):
+async def dismiss_job(request: Request, job_id: str, session: dict = Depends(get_admin_session)):
     """Manually dismiss/remove a job from the list (admin only).
 
     Jobs are not deleted, just marked as dismissed so they won't appear in the list.
     """
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         # Check if job exists
@@ -926,7 +902,7 @@ async def dismiss_job(request: Request, session_id: str, job_id: str):
 
 
 @router.post("/jobs/{job_id}/cancel")
-async def cancel_job(request: Request, session_id: str, job_id: str):
+async def cancel_job(request: Request, job_id: str, session: dict = Depends(get_admin_session)):
     """Cancel an in-progress processing job (admin only).
 
     Revokes the Celery task and marks the job as cancelled.
@@ -934,7 +910,6 @@ async def cancel_job(request: Request, session_id: str, job_id: str):
     import httpx
     import json as json_lib
 
-    await require_admin(request, session_id)
 
     async with request.app.state.db_pool.acquire() as conn:
         # Check if job exists and is in progress
@@ -946,7 +921,7 @@ async def cancel_job(request: Request, session_id: str, job_id: str):
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        if job["status"] not in ("queued", "processing"):
+        if job["status"] not in ("pending", "processing"):
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot cancel job with status '{job['status']}'"
@@ -977,20 +952,23 @@ async def cancel_job(request: Request, session_id: str, job_id: str):
             WHERE id = $1
         """, job_id)
 
-        # Also update the book status if it exists
-        book_id = metadata.get("book_id")
-        if book_id:
+        # The worker creates the book row (named after the file) when the task
+        # starts; cancelling mid-run would otherwise leave it stuck in
+        # 'processing'. Jobs carry no book_id, so resolve the book by name.
+        filename = metadata.get("filename")
+        if filename:
+            import os
             await conn.execute("""
                 UPDATE books
                 SET processing_status = 'cancelled', updated_at = NOW()
-                WHERE id = $1
-            """, book_id)
+                WHERE name = $1 AND processing_status = 'processing'
+            """, os.path.splitext(filename)[0])
 
     return {"success": True, "message": "Job cancelled"}
 
 
 @router.post("/upload-embedding-file")
-async def upload_embedding_file(request: Request, session_id: str):
+async def upload_embedding_file(request: Request, session: dict = Depends(get_admin_session)):
     """
     Upload a JSON embedding file and import into Qdrant.
 
@@ -1014,7 +992,6 @@ async def upload_embedding_file(request: Request, session_id: str):
     from uuid import uuid4
     from qdrant_client.models import PointStruct, SparseVector
 
-    await require_admin(request, session_id)
 
     # Get the form data from the request
     form = await request.form()
@@ -1076,10 +1053,11 @@ async def upload_embedding_file(request: Request, session_id: str):
 
         # Upsert to Qdrant
         qdrant = request.app.state.qdrant
-        qdrant.client.upsert(
+        await qdrant.client.upsert(
             collection_name=qdrant.collection,
             points=points
         )
+        qdrant.invalidate_catalog_cache()
 
         return {
             "success": True,
@@ -1098,19 +1076,22 @@ async def upload_embedding_file(request: Request, session_id: str):
 # =====================================================================
 
 @router.post("/snapshots/create")
-async def create_snapshot(request: Request, session_id: str = Query(...)):
+async def create_snapshot(request: Request, session: dict = Depends(get_admin_session)):
     """Create a new Qdrant snapshot and store metadata alongside it."""
     if not settings.enable_snapshot_management:
         raise HTTPException(status_code=403, detail="Snapshot management is disabled")
 
-    await require_admin(request, session_id)
 
     try:
         from app.utils.snapshot_helpers import save_metadata_to_file
 
-        result = request.app.state.qdrant.create_snapshot()
+        result = await request.app.state.qdrant.create_snapshot()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # Save metadata alongside the snapshot file on disk
+    # A snapshot without metadata cannot be restored, so a failed metadata
+    # write must not leave the snapshot behind.
+    try:
         async with request.app.state.db_pool.acquire() as conn:
             await save_metadata_to_file(
                 conn,
@@ -1118,24 +1099,34 @@ async def create_snapshot(request: Request, session_id: str = Query(...)):
                 settings.snapshot_dir,
                 settings.qdrant_collection
             )
-
-        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        try:
+            await request.app.state.qdrant.delete_snapshot(result["snapshot_name"])
+        except Exception as cleanup_error:
+            logger.error(f"Failed to delete orphaned snapshot: {cleanup_error}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Snapshot metadata could not be written to "
+                f"'{settings.snapshot_dir}' ({e}). The snapshot was discarded "
+                f"because it would not be restorable without metadata."
+            )
+        )
+
+    return result
 
 
 @router.get("/snapshots")
-async def list_snapshots(request: Request, session_id: str = Query(...)):
+async def list_snapshots(request: Request, session: dict = Depends(get_admin_session)):
     """List all available Qdrant snapshots with metadata availability."""
     if not settings.enable_snapshot_management:
         raise HTTPException(status_code=403, detail="Snapshot management is disabled")
 
-    await require_admin(request, session_id)
 
     try:
         from app.utils.snapshot_helpers import load_metadata_from_file
 
-        snapshots = request.app.state.qdrant.list_snapshots()
+        snapshots = await request.app.state.qdrant.list_snapshots()
 
         # Check which snapshots have stored metadata
         for snap in snapshots:
@@ -1153,12 +1144,11 @@ async def list_snapshots(request: Request, session_id: str = Query(...)):
 
 
 @router.post("/snapshots/{snapshot_name}/restore")
-async def restore_snapshot(request: Request, snapshot_name: str, session_id: str = Query(...)):
+async def restore_snapshot(request: Request, snapshot_name: str, session: dict = Depends(get_admin_session)):
     """Restore Qdrant snapshot using its stored metadata."""
     if not settings.enable_snapshot_management:
         raise HTTPException(status_code=403, detail="Snapshot management is disabled")
 
-    await require_admin(request, session_id)
 
     try:
         from app.utils.snapshot_helpers import load_metadata_from_file, import_metadata
@@ -1175,7 +1165,8 @@ async def restore_snapshot(request: Request, snapshot_name: str, session_id: str
             )
 
         # Restore Qdrant snapshot
-        request.app.state.qdrant.restore_snapshot(snapshot_name)
+        await request.app.state.qdrant.restore_snapshot(snapshot_name)
+        request.app.state.qdrant.invalidate_catalog_cache()
 
         # Import stored metadata
         async with request.app.state.db_pool.acquire() as conn:
@@ -1196,17 +1187,16 @@ async def restore_snapshot(request: Request, snapshot_name: str, session_id: str
 
 
 @router.delete("/snapshots/{snapshot_name}")
-async def delete_snapshot(request: Request, snapshot_name: str, session_id: str = Query(...)):
+async def delete_snapshot(request: Request, snapshot_name: str, session: dict = Depends(get_admin_session)):
     """Delete a Qdrant snapshot and its metadata file."""
     if not settings.enable_snapshot_management:
         raise HTTPException(status_code=403, detail="Snapshot management is disabled")
 
-    await require_admin(request, session_id)
 
     try:
         from app.utils.snapshot_helpers import delete_metadata_file
 
-        result = request.app.state.qdrant.delete_snapshot(snapshot_name)
+        result = await request.app.state.qdrant.delete_snapshot(snapshot_name)
 
         # Also clean up metadata file
         delete_metadata_file(snapshot_name, settings.snapshot_dir, settings.qdrant_collection)
@@ -1217,12 +1207,11 @@ async def delete_snapshot(request: Request, snapshot_name: str, session_id: str 
 
 
 @router.get("/snapshots/{snapshot_name}/download")
-async def download_snapshot(request: Request, snapshot_name: str, session_id: str = Query(...)):
+async def download_snapshot(request: Request, snapshot_name: str, session: dict = Depends(get_admin_session)):
     """Download Qdrant snapshot file via proxy."""
     if not settings.enable_snapshot_management:
         raise HTTPException(status_code=403, detail="Snapshot management is disabled")
 
-    await require_admin(request, session_id)
 
     try:
         import httpx
@@ -1245,12 +1234,11 @@ async def download_snapshot(request: Request, snapshot_name: str, session_id: st
 
 
 @router.get("/snapshots/{snapshot_name}/metadata")
-async def download_snapshot_metadata(request: Request, snapshot_name: str, session_id: str = Query(...)):
+async def download_snapshot_metadata(request: Request, snapshot_name: str, session: dict = Depends(get_admin_session)):
     """Download the stored metadata JSON for a snapshot."""
     if not settings.enable_snapshot_management:
         raise HTTPException(status_code=403, detail="Snapshot management is disabled")
 
-    await require_admin(request, session_id)
 
     try:
         from fastapi.responses import JSONResponse
@@ -1281,13 +1269,12 @@ async def upload_snapshot(
     request: Request,
     snapshot_file: UploadFile = File(...),
     metadata_file: UploadFile = File(...),
-    session_id: str = Query(...)
+    session: dict = Depends(get_admin_session)
 ):
     """Upload an external snapshot and its metadata file."""
     if not settings.enable_snapshot_management:
         raise HTTPException(status_code=403, detail="Snapshot management is disabled")
 
-    await require_admin(request, session_id)
 
     try:
         import httpx
@@ -1308,6 +1295,8 @@ async def upload_snapshot(
             )
             upload_response.raise_for_status()
 
+        request.app.state.qdrant.invalidate_catalog_cache()
+
         # Parse and import metadata into PostgreSQL
         metadata_content = await metadata_file.read()
         metadata = json.loads(metadata_content)
@@ -1315,12 +1304,28 @@ async def upload_snapshot(
         async with request.app.state.db_pool.acquire() as conn:
             import_result = await import_metadata(conn, metadata)
 
-        # Save metadata file to disk so it's available for future restores
-        metadata_dir = Path(settings.snapshot_dir) / settings.qdrant_collection
-        metadata_dir.mkdir(parents=True, exist_ok=True)
-        metadata_path = metadata_dir / f"{snapshot_filename}.metadata.json"
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        # Save metadata file to disk so it's available for future restores.
+        # Without it the uploaded snapshot would not be restorable, so drop
+        # the snapshot again if the write fails.
+        try:
+            metadata_dir = Path(settings.snapshot_dir) / settings.qdrant_collection
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            metadata_path = metadata_dir / f"{snapshot_filename}.metadata.json"
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            try:
+                await request.app.state.qdrant.delete_snapshot(snapshot_filename)
+            except Exception as cleanup_error:
+                logger.error(f"Failed to delete orphaned snapshot: {cleanup_error}")
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Snapshot metadata could not be written to "
+                    f"'{settings.snapshot_dir}' ({e}). The uploaded snapshot "
+                    f"was discarded because it would not be restorable."
+                )
+            )
 
         return {
             "success": True,
@@ -1329,15 +1334,16 @@ async def upload_snapshot(
             "chapters_imported": import_result.get("chapters_imported")
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to upload snapshot: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/features")
-async def get_feature_flags(request: Request, session_id: str = Query(...)):
+async def get_feature_flags(request: Request, session: dict = Depends(get_admin_session)):
     """Get enabled admin features."""
-    await require_admin(request, session_id)
 
     return {
         "snapshot_management_enabled": settings.enable_snapshot_management,

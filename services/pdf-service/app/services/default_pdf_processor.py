@@ -1,24 +1,26 @@
 """
-This processor uses LLM-based chapter identification and NLTK chunking for
-higher quality, more structured output compared to the fallback processor.
+Default PDF processor — uses LLM-based chapter identification and NLTK chunking
+for structured, hierarchical output. Falls back to DoclingPDFProcessor on failure.
 """
 
+import ast
 import os
 import re
 import logging
+from bisect import bisect_right
 from typing import List, Dict, Optional
 
 import fitz  # PyMuPDF
 from pypdf import PdfReader
 from langchain.text_splitter import NLTKTextSplitter
-from openai import OpenAI
 
 from app.config import settings
+from app.services.llm_client import build_chat_client
 
 logger = logging.getLogger(__name__)
 
 
-class OriginalPDFProcessor:
+class DefaultPDFProcessor:
     """
     PDF processor that uses LLM-based chapter identification and NLTK chunking.
 
@@ -29,10 +31,9 @@ class OriginalPDFProcessor:
     - Minimum chunk length filter (300 chars)
     """
 
-    def __init__(self, llm_model: str = "gpt-5-mini"):
-        """Initialize the OriginalPDFProcessor."""
-        self.model = llm_model
-        self.client = OpenAI(api_key=settings.openai_api_key)
+    def __init__(self, llm_model: str = settings.pdf_chapter_detection_model):
+        """Initialize the DefaultPDFProcessor."""
+        self.client, self.model = build_chat_client(llm_model)
         self.chunk_size = settings.chunk_size  # Default 3000
         self.chunk_overlap = settings.chunk_overlap  # Default 1000
         self.min_chunk_length = settings.min_chunk_length  # Default 300
@@ -110,17 +111,16 @@ class OriginalPDFProcessor:
 
             # Try to parse the response as a Python list
             try:
-                return eval(answer)
+                return ast.literal_eval(answer)
             except:
                 # Try to extract from markdown code block
                 try:
                     start = answer.find("```python")
                     end = answer.find("```", start + 1)
                     answer = answer[start + 9 : end].strip()
-                    return eval(answer)
+                    return ast.literal_eval(answer)
                 except:
                     # Try to find a list pattern
-                    import ast
                     match = re.search(r'\[.*\]', answer, re.DOTALL)
                     if match:
                         return ast.literal_eval(match.group())
@@ -214,6 +214,16 @@ class OriginalPDFProcessor:
 
         return False
 
+    @staticmethod
+    def _page_from_offset(start_index: int, page_offsets: list) -> int:
+        """Map a character offset to its 1-based page number.
+
+        page_offsets: sorted list of (char_offset, page_number) tuples.
+        """
+        offsets = [o for o, _ in page_offsets]
+        idx = bisect_right(offsets, start_index) - 1
+        return page_offsets[max(idx, 0)][1]
+
     def process_chapter(
         self,
         reader: PdfReader,
@@ -244,10 +254,12 @@ class OriginalPDFProcessor:
 
         try:
             # Process chapter introduction or whole chapter if no topics
+            pre_topic_text = ""
+            page_offsets = []
             if topics:
                 # If there are topics, process the introduction
-                pre_topic_text = ""
                 for i in range(chapter_page, topics[0]["Page"]):
+                    page_offsets.append((len(pre_topic_text), i + 1))
                     page_text = reader.pages[i].extract_text()
                     title_test_text = topics[0]["Topic"] + "\n"
                     if title_test_text in page_text:
@@ -260,24 +272,28 @@ class OriginalPDFProcessor:
                 else:
                     next_chapter_page = summary_list[chapter_index + 1]["Page"]
 
-                pre_topic_text = ""
                 for i in range(chapter_page, next_chapter_page):
+                    page_offsets.append((len(pre_topic_text), i + 1))
                     pre_topic_text += reader.pages[i].extract_text()
 
-            # Process introduction chunks
-            for text in text_splitter.split_text(pre_topic_text):
-                text = text.encode("utf-8", errors="ignore").decode("utf-8")
+            # Split preserving start_index in metadata for page mapping
+            if pre_topic_text.strip():
+                docs = text_splitter.create_documents([pre_topic_text])
+                for doc in docs:
+                    text = doc.page_content.encode("utf-8", errors="ignore").decode("utf-8")
 
-                if self._should_skip_chunk(text):
-                    continue
+                    if self._should_skip_chunk(text):
+                        continue
 
-                chunks.append({
-                    "book_name": book_name,
-                    "chapter": title,
-                    "text": text,
-                    "topic": "Chapter Introduction",
-                    "is_introduction": True
-                })
+                    page = self._page_from_offset(doc.metadata["start_index"], page_offsets)
+                    chunks.append({
+                        "book_name": book_name,
+                        "chapter": title,
+                        "text": text,
+                        "topic": "Chapter Introduction",
+                        "is_introduction": True,
+                        "page": page
+                    })
 
         except Exception as e:
             logger.error(f"Error processing chapter introduction for {title}: {e}")
@@ -307,7 +323,9 @@ class OriginalPDFProcessor:
 
                 # Extract and process topic text
                 topic_text = ""
+                page_offsets = []
                 for i in range(topic_page, next_topic_page):
+                    page_offsets.append((len(topic_text), i + 1))
                     page_text = reader.pages[i].extract_text()
 
                     title_test_text = topic_title + "\n"
@@ -326,20 +344,24 @@ class OriginalPDFProcessor:
                 if topic_lower == "index" or re.match(r"^\d+\.?\s*index$", topic_lower):
                     continue
 
-                # Process topic chunks
-                for text in text_splitter.split_text(topic_text):
-                    text = text.encode("utf-8", errors="ignore").decode("utf-8")
+                # Split preserving start_index in metadata for page mapping
+                if topic_text.strip():
+                    docs = text_splitter.create_documents([topic_text])
+                    for doc in docs:
+                        text = doc.page_content.encode("utf-8", errors="ignore").decode("utf-8")
 
-                    if self._should_skip_chunk(text):
-                        continue
+                        if self._should_skip_chunk(text):
+                            continue
 
-                    chunks.append({
-                        "book_name": book_name,
-                        "chapter": title,
-                        "text": text,
-                        "topic": topic_title,
-                        "is_introduction": False
-                    })
+                        page = self._page_from_offset(doc.metadata["start_index"], page_offsets)
+                        chunks.append({
+                            "book_name": book_name,
+                            "chapter": title,
+                            "text": text,
+                            "topic": topic_title,
+                            "is_introduction": False,
+                            "page": page
+                        })
 
         except Exception as e:
             logger.error(f"Error processing topics for chapter {title}: {e}")
@@ -370,8 +392,10 @@ class OriginalPDFProcessor:
         reader = PdfReader(path)
         text_splitter = NLTKTextSplitter(
             chunk_size=self.chunk_size,
-            separator="\n",
-            chunk_overlap=self.chunk_overlap
+            separator="",
+            chunk_overlap=self.chunk_overlap,
+            add_start_index=True,
+            use_span_tokenize=True
         )
 
         all_chunks = []

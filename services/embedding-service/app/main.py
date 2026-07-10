@@ -6,7 +6,6 @@ using the BAAI/bge-m3 model with GPU acceleration.
 """
 
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -77,7 +76,7 @@ async def lifespan(app: FastAPI):
 
         model = BGEM3FlagModel(
             settings.model_name,
-            device=device.type,  # "cuda" or "cpu"
+            devices=device.type,  # "cuda" or "cpu"
             use_fp16=settings.use_fp16 and device.type == "cuda"
         )
 
@@ -101,17 +100,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AcademiCK Embedding Service",
     description="BGE-M3 embedding generation service with GPU acceleration",
-    version="1.0.0",
+    version="0.2.0-alpha",
     lifespan=lifespan
-)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 
@@ -193,6 +183,6 @@ async def root():
     return {
         "service": "AcademiCK Embedding Service",
         "model": settings.model_name,
-        "version": "1.0.0",
+        "version": "0.2.0-alpha",
         "docs": "/docs"
     }

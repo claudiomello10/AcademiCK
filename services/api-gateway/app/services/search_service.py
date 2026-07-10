@@ -9,16 +9,23 @@ import logging
 
 from app.clients.qdrant_client import QdrantManager
 from app.clients.embedding_client import EmbeddingClient
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Search weights based on intent
+# Search weights based on intent (configurable via env vars)
 SEARCH_WEIGHTS = {
-    "question_answering": {"dense": 0.6, "sparse": 0.4},
-    "summarization": {"dense": 0.7, "sparse": 0.3},
-    "coding": {"dense": 0.4, "sparse": 0.6},
-    "searching_for_information": {"dense": 0.5, "sparse": 0.5},
+    "question_answering": {"dense": settings.search_weight_qa_dense, "sparse": settings.search_weight_qa_sparse},
+    "summarization": {"dense": settings.search_weight_summarization_dense, "sparse": settings.search_weight_summarization_sparse},
+    "coding": {"dense": settings.search_weight_coding_dense, "sparse": settings.search_weight_coding_sparse},
+    "searching_for_information": {"dense": settings.search_weight_searching_dense, "sparse": settings.search_weight_searching_sparse},
 }
+
+
+def _weights_for(intent: str) -> tuple[float, float]:
+    """Return (dense_weight, sparse_weight) for an intent, defaulting to equal."""
+    w = SEARCH_WEIGHTS.get(intent, {"dense": 0.5, "sparse": 0.5})
+    return w["dense"], w["sparse"]
 
 
 class SearchService:
@@ -93,11 +100,14 @@ class SearchService:
 
         # Perform hybrid search
         try:
+            dense_weight, sparse_weight = _weights_for(intent)
             results = await self.qdrant.search_hybrid(
                 dense_vector=dense_vector,
                 sparse_vector=sparse_dict,
                 limit=top_k,
-                book_filter=book_filter
+                book_filter=book_filter,
+                dense_weight=dense_weight,
+                sparse_weight=sparse_weight,
             )
 
             # Cache results
@@ -156,11 +166,14 @@ class SearchService:
 
         # Perform hybrid search with pre-computed embeddings
         try:
+            dense_weight, sparse_weight = _weights_for(intent)
             results = await self.qdrant.search_hybrid(
                 dense_vector=dense_vector,
                 sparse_vector=sparse_dict,
                 limit=top_k,
-                book_filter=book_filter
+                book_filter=book_filter,
+                dense_weight=dense_weight,
+                sparse_weight=sparse_weight,
             )
 
             # Cache results

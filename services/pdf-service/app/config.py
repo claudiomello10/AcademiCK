@@ -9,7 +9,7 @@ When running standalone, export them in your shell before starting the service.
 """
 
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _require_env(name: str) -> str:
@@ -42,8 +42,21 @@ class Settings(BaseSettings):
         "EMBEDDING_SERVICE_URL", "http://localhost:8002"
     )
 
-    # OpenAI for TOC analysis
+    # LLM for TOC / chapter analysis. The model is routed to its provider by a
+    # "provider/" name prefix (see app/services/llm_client.py).
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
+    pdf_chapter_detection_model: str = os.getenv("PDF_CHAPTER_DETECTION_MODEL", "openai/gpt-5-nano")
+
+    # Provider base URLs (override to use a proxy or an OpenAI-compatible gateway).
+    anthropic_base_url: str = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/")
+    deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+
+    # Local / self-hosted OpenAI-compatible endpoint, used when the model name
+    # is prefixed with "local/".
+    local_llm_base_url: str = os.getenv("LOCAL_LLM_BASE_URL", "")
+    local_llm_api_key: str = os.getenv("LOCAL_LLM_API_KEY", "EMPTY")
 
     # Processing settings
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "3000"))
@@ -57,8 +70,7 @@ class Settings(BaseSettings):
     upload_dir: str = os.getenv("UPLOAD_DIR", "/app/processed/uploads")
     processed_dir: str = os.getenv("PROCESSED_DIR", "/app/processed")
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings()

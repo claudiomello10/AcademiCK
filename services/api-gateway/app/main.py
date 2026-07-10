@@ -12,8 +12,8 @@ import asyncpg
 from redis import asyncio as aioredis
 import logging
 
-from app.config import settings
-from app.routers import auth, chat, books, admin, health
+from app.config import settings, CORS_ALLOWED_ORIGINS
+from app.routers import auth, chat, books, admin, health, models
 from app.clients.qdrant_client import QdrantManager
 from app.clients.intent_client import IntentClient
 from app.clients.embedding_client import EmbeddingClient
@@ -81,9 +81,10 @@ async def lifespan(app: FastAPI):
     app.state.qdrant = QdrantManager(
         host=settings.qdrant_host,
         port=settings.qdrant_port,
-        collection=settings.qdrant_collection
+        collection=settings.qdrant_collection,
+        catalog_ttl=settings.library_map_cache_ttl
     )
-    app.state.qdrant.ensure_collection()
+    await app.state.qdrant.ensure_collection()
     logger.info("Qdrant connected")
 
     # Initialize service clients
@@ -102,7 +103,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down API Gateway...")
     await app.state.db_pool.close()
-    await app.state.redis.close()
+    await app.state.redis.aclose()
     await app.state.intent_client.close()
     await app.state.embedding_client.close()
     logger.info("API Gateway shutdown complete")
@@ -112,7 +113,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AcademiCK API Gateway",
     description="RAG-powered educational assistant API",
-    version="2.0.0",
+    version="0.2.0-alpha",
     lifespan=lifespan,
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,
@@ -122,7 +123,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -133,6 +134,7 @@ app.include_router(health.router, tags=["Health"])
 app.include_router(auth.router, prefix="/api/v1", tags=["Authentication"])
 app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
 app.include_router(books.router, prefix="/api/v1", tags=["Books"])
+app.include_router(models.router, prefix="/api/v1", tags=["Models"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
 
 
@@ -141,7 +143,7 @@ async def root():
     """Root endpoint."""
     response = {
         "service": "AcademiCK API Gateway",
-        "version": "2.0.0",
+        "version": "0.2.0-alpha",
     }
     if settings.docs_enabled:
         response["docs"] = "/docs"

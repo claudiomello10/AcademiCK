@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: pytest (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api-gateway, pdf-service]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: academick
+          POSTGRES_PASSWORD: ci-db-password
+          POSTGRES_DB: academick
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U academick"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      qdrant:
+        image: qdrant/qdrant:v1.12.4
+        ports:
+          - 6333:6333
+    env:
+      DATABASE_URL: postgresql://academick:ci-db-password@localhost:5432/academick
+      REDIS_URL: redis://localhost:6379/0
+      QDRANT_HOST: localhost
+      QDRANT_PORT: "6333"
+      QDRANT_COLLECTION: ci_embeddings
+      SESSION_SECRET: ci-session-secret
+      ADMIN_PASSWORD: ci-admin-password
+      GUEST_PASSWORD: ci-guest-password
+      AVAILABLE_MODELS: '[{"provider": "openai", "value": "openai/gpt-test", "label": "Test"}]'
+      DEFAULT_MODEL_FRONTEND: openai/gpt-test
+      OPENAI_API_KEY: ci-fake-key
+      PDF_CHAPTER_DETECTION_MODEL: openai/gpt-test
+      EMBEDDING_SERVICE_URL: http://localhost:8002
+      INTENT_SERVICE_URL: http://localhost:8001
+      SNAPSHOT_DIR: /tmp/academick-test-snapshots
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            services/${{ matrix.service }}/requirements.txt
+            services/${{ matrix.service }}/requirements-dev.txt
+            services/embedding-service/requirements.txt
+            services/intent-service/requirements.txt
+
+      - name: Cache ML models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ matrix.service }}
+
+      - name: Initialize database schema
+        run: psql "$DATABASE_URL" -f ../../scripts/init-db.sql
+
+      - name: Wait for Qdrant
+        run: timeout 60 bash -c 'until curl -sf http://localhost:6333/healthz; do sleep 2; done'
+
+      # Tests use the real ML services on CPU, each in its own venv (they pin
+      # different transformers versions; CPU torch wheels — CUDA doesn't fit
+      # the runner). Intent is only called by the api-gateway suite.
+      - name: Start embedding service
+        working-directory: services/embedding-service
+        run: |
+          python -m venv /tmp/embed-venv
+          /tmp/embed-venv/bin/pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+          /tmp/embed-venv/bin/pip install -r requirements.txt
+          DEVICE=cpu nohup /tmp/embed-venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8002 > /tmp/embedding.log 2>&1 &
+          timeout 600 bash -c 'until curl -sf http://localhost:8002/health; do sleep 5; done' \
+            || { cat /tmp/embedding.log; exit 1; }
+
+      - name: Start intent service
+        if: matrix.service == 'api-gateway'
+        working-directory: services/intent-service
+        run: |
+          python -m venv /tmp/intent-venv
+          /tmp/intent-venv/bin/pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+          /tmp/intent-venv/bin/pip install -r requirements.txt
+          DEVICE=cpu nohup /tmp/intent-venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 > /tmp/intent.log 2>&1 &
+          timeout 600 bash -c 'until curl -sf http://localhost:8001/health; do sleep 5; done' \
+            || { cat /tmp/intent.log; exit 1; }
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest
+
+  changes:
+    name: detect changed services
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api-gateway:
+              - 'services/api-gateway/**'
+            pdf-service:
+              - 'services/pdf-service/**'
+            embedding-service:
+              - 'services/embedding-service/**'
+            intent-service:
+              - 'services/intent-service/**'
+            frontend:
+              - 'services/frontend/**'
+
+  docker-build:
+    name: docker build (${{ matrix.service }})
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The frontend builds from the repo root; every other service from its own dir.
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service == 'frontend' && '.' || format('services/{0}', matrix.service) }}
+          file: services/${{ matrix.service }}/Dockerfile
+          push: false
+          build-args: ${{ matrix.service == 'frontend' && 'NEXT_PUBLIC_API_URL=http://localhost' || '' }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}

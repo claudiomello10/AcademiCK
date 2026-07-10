@@ -6,7 +6,6 @@ Uses Celery for async processing.
 """
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import io
@@ -29,16 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="AcademiCK PDF Processing Service",
     description="PDF processing and embedding generation",
-    version="1.0.0"
-)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    version="0.2.0-alpha"
 )
 
 
@@ -85,7 +75,7 @@ async def process_pdf(request: ProcessRequest):
 
     return ProcessResponse(
         job_id=task.id,
-        status="queued",
+        status="pending",
         message=f"Processing started for {request.book_name}"
     )
 
@@ -173,7 +163,7 @@ async def upload_and_process(
 
     return ProcessResponse(
         job_id=task.id,
-        status="queued",
+        status="pending",
         message=f"Upload complete. Processing started for {book_name}"
     )
 
@@ -247,6 +237,6 @@ async def root():
     """Root endpoint."""
     return {
         "service": "AcademiCK PDF Processing Service",
-        "version": "1.0.0",
+        "version": "0.2.0-alpha",
         "docs": "/docs"
     }

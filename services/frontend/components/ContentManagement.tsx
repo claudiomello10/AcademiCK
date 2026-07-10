@@ -12,7 +12,7 @@ import {
     ChevronUp, ChevronDown, CheckCircle2, X, AlertTriangle, StopCircle
 } from 'lucide-react';
 
-import { API_BASE_URL, API_ENDPOINTS } from '@/config/constants';
+import { API_BASE_URL, API_ENDPOINTS, authHeaders } from '@/config/constants';
 
 interface ProcessingJob {
     filename: string;
@@ -31,7 +31,10 @@ interface BookInfo {
     total_chapters: number;
     total_chunks: number;
     processing_status?: string;
+    processing_method?: string;
 }
+
+type SnapshotOp = 'restore' | 'delete' | 'download' | 'metadata';
 
 interface ExpandedState {
     [key: string]: boolean;
@@ -60,6 +63,9 @@ const ContentManagement = () => {
     });
     const [snapshotToRestore, setSnapshotToRestore] = useState<string | null>(null);
     const [snapshotToDelete, setSnapshotToDelete] = useState<string | null>(null);
+    const [snapshotError, setSnapshotError] = useState<string | null>(null);
+    const [snapshotSuccess, setSnapshotSuccess] = useState('');
+    const [snapshotBusy, setSnapshotBusy] = useState<{ name: string; op: SnapshotOp } | null>(null);
     const [showUploadDialog, setShowUploadDialog] = useState(false);
     const [uploadSnapshotFile, setUploadSnapshotFile] = useState<File | null>(null);
     const [uploadMetadataFile, setUploadMetadataFile] = useState<File | null>(null);
@@ -89,7 +95,8 @@ const ContentManagement = () => {
 
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.jobs(sessionId)}`
+                `${API_BASE_URL}${API_ENDPOINTS.admin.jobs}`,
+                { headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 const data = await response.json();
@@ -165,7 +172,7 @@ const ContentManagement = () => {
         try {
             if (!sessionId) return;
 
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.contentStats(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.contentStats}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setStats(data);
@@ -179,7 +186,7 @@ const ContentManagement = () => {
         try {
             if (!sessionId) return;
 
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.bookList(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.bookList}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setBooks(data);
@@ -237,8 +244,8 @@ const ContentManagement = () => {
 
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.dismissJob(jobId, sessionId)}`,
-                { method: 'DELETE' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.dismissJob(jobId)}`,
+                { method: 'DELETE', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 setProcessingJobs(prev => prev.filter(j => j.job_id !== jobId));
@@ -252,8 +259,8 @@ const ContentManagement = () => {
         if (!sessionId) return;
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.cancelJob(jobId, sessionId)}`,
-                { method: 'POST' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.cancelJob(jobId)}`,
+                { method: 'POST', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
                 // Update job status locally while waiting for next poll
@@ -287,8 +294,9 @@ const ContentManagement = () => {
         });
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.uploadPdfs(sessionId)}`, {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.uploadPdfs}`, {
                 method: 'POST',
+                headers: authHeaders(sessionId),
                 body: formData
             });
 
@@ -299,9 +307,9 @@ const ContentManagement = () => {
                 const jobs: ProcessingJob[] = data.jobs.map((job: { filename: string; job_id: string; status: string }) => ({
                     filename: job.filename,
                     job_id: job.job_id,
-                    status: job.status || 'queued',
+                    status: job.status || 'pending',
                     progress: 0,
-                    stage: 'queued'
+                    stage: 'pending'
                 }));
 
                 if (data.errors && data.errors.length > 0) {
@@ -340,7 +348,7 @@ const ContentManagement = () => {
     const fetchFeatureFlags = async () => {
         if (!sessionId) return;
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.features(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.features}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setFeatureFlags(data);
@@ -350,18 +358,25 @@ const ContentManagement = () => {
         }
     };
 
+    const snapshotIsBusy = (name: string, op: SnapshotOp) =>
+        snapshotBusy?.name === name && snapshotBusy?.op === op;
+
     const fetchSnapshots = async () => {
         if (!sessionId) return;
         setSnapshotLoading(true);
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.snapshots(sessionId)}`);
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.snapshots}`, { headers: authHeaders(sessionId) });
             if (response.ok) {
                 const data = await response.json();
                 setSnapshots(data.snapshots);
+                setSnapshotError(null);
+            } else {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Failed to load snapshots (HTTP ${response.status})`);
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error('Failed to fetch snapshots:', error);
-            setError('Failed to load snapshots');
+            setSnapshotError(error.message || 'Failed to load snapshots');
         } finally {
             setSnapshotLoading(false);
         }
@@ -370,20 +385,23 @@ const ContentManagement = () => {
     const createSnapshot = async () => {
         if (!sessionId) return;
         setProcessing(true);
-        setError(null);
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.createSnapshot(sessionId)}`, {
-                method: 'POST'
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.createSnapshot}`, {
+                method: 'POST',
+                headers: authHeaders(sessionId)
             });
             if (response.ok) {
                 const data = await response.json();
-                setSuccess(`Snapshot created: ${data.snapshot_name}`);
+                setSnapshotSuccess(`Snapshot created: ${data.snapshot_name}`);
                 await fetchSnapshots();
             } else {
-                throw new Error('Failed to create snapshot');
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Failed to create snapshot (HTTP ${response.status})`);
             }
-        } catch (error) {
-            setError('Failed to create snapshot');
+        } catch (error: any) {
+            setSnapshotError(error.message || 'Failed to create snapshot');
         } finally {
             setProcessing(false);
         }
@@ -392,27 +410,28 @@ const ContentManagement = () => {
     const restoreSnapshot = async (snapshotName: string) => {
         if (!sessionId) return;
 
-        setProcessing(true);
-        setError(null);
+        setSnapshotBusy({ name: snapshotName, op: 'restore' });
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.restoreSnapshot(snapshotName, sessionId)}`,
-                { method: 'POST' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.restoreSnapshot(snapshotName)}`,
+                { method: 'POST', headers: authHeaders(sessionId) }
             );
 
             if (response.ok) {
                 const data = await response.json();
-                setSuccess(`Restored: ${data.books_imported} books, ${data.chapters_imported} chapters`);
+                setSnapshotSuccess(`Restored: ${data.books_imported} books, ${data.chapters_imported} chapters`);
                 await fetchStats();
                 await fetchBooks();
             } else {
-                const err = await response.json();
+                const err = await response.json().catch(() => ({}));
                 throw new Error(err.detail || 'Failed to restore snapshot');
             }
         } catch (error: any) {
-            setError(error.message || 'Failed to restore snapshot');
+            setSnapshotError(error.message || 'Failed to restore snapshot');
         } finally {
-            setProcessing(false);
+            setSnapshotBusy(null);
             setSnapshotToRestore(null);
         }
     };
@@ -421,29 +440,30 @@ const ContentManagement = () => {
         if (!sessionId || !uploadSnapshotFile || !uploadMetadataFile) return;
 
         setProcessing(true);
-        setError(null);
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
             const formData = new FormData();
             formData.append('snapshot_file', uploadSnapshotFile);
             formData.append('metadata_file', uploadMetadataFile);
 
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.uploadSnapshot(sessionId)}`,
-                { method: 'POST', body: formData }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.uploadSnapshot}`,
+                { method: 'POST', headers: authHeaders(sessionId), body: formData }
             );
 
             if (response.ok) {
                 const data = await response.json();
-                setSuccess(`Uploaded: ${data.books_imported} books, ${data.chapters_imported} chapters`);
+                setSnapshotSuccess(`Uploaded: ${data.books_imported} books, ${data.chapters_imported} chapters`);
                 await fetchSnapshots();
                 await fetchStats();
                 await fetchBooks();
             } else {
-                const err = await response.json();
+                const err = await response.json().catch(() => ({}));
                 throw new Error(err.detail || 'Failed to upload snapshot');
             }
         } catch (error: any) {
-            setError(error.message || 'Failed to upload snapshot');
+            setSnapshotError(error.message || 'Failed to upload snapshot');
         } finally {
             setProcessing(false);
             setShowUploadDialog(false);
@@ -452,55 +472,78 @@ const ContentManagement = () => {
         }
     };
 
+    // Anchor-href downloads can't carry the Authorization header, so fetch
+    // the file as a blob and trigger the download from an object URL.
+    const downloadAsBlob = async (url: string, filename: string) => {
+        const response = await fetch(url, { headers: authHeaders(sessionId!) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blobUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        // Revoking synchronously can cancel a download that hasn't started yet.
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    };
+
     const downloadSnapshot = async (snapshotName: string) => {
         if (!sessionId) return;
+        setSnapshotBusy({ name: snapshotName, op: 'download' });
+        setSnapshotError(null);
         try {
-            const url = `${API_BASE_URL}${API_ENDPOINTS.admin.downloadSnapshot(snapshotName, sessionId)}`;
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = snapshotName;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            setSuccess(`Downloading snapshot: ${snapshotName}`);
-        } catch (error) {
-            setError('Failed to download snapshot');
+            await downloadAsBlob(
+                `${API_BASE_URL}${API_ENDPOINTS.admin.downloadSnapshot(snapshotName)}`,
+                snapshotName
+            );
+            setSnapshotSuccess(`Downloading snapshot: ${snapshotName}`);
+        } catch (error: any) {
+            setSnapshotError(`Failed to download snapshot (${error.message})`);
+        } finally {
+            setSnapshotBusy(null);
         }
     };
 
     const downloadMetadata = async (snapshotName: string) => {
         if (!sessionId) return;
+        setSnapshotBusy({ name: snapshotName, op: 'metadata' });
+        setSnapshotError(null);
         try {
-            const url = `${API_BASE_URL}${API_ENDPOINTS.admin.downloadMetadata(snapshotName, sessionId)}`;
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `${snapshotName}.metadata.json`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            setSuccess(`Downloading metadata for ${snapshotName}`);
-        } catch (error) {
-            setError('Failed to download metadata');
+            await downloadAsBlob(
+                `${API_BASE_URL}${API_ENDPOINTS.admin.downloadMetadata(snapshotName)}`,
+                `${snapshotName}.metadata.json`
+            );
+            setSnapshotSuccess(`Downloading metadata for ${snapshotName}`);
+        } catch (error: any) {
+            setSnapshotError(`Failed to download metadata (${error.message})`);
+        } finally {
+            setSnapshotBusy(null);
         }
     };
 
     const deleteSnapshot = async (snapshotName: string) => {
         if (!sessionId) return;
 
+        setSnapshotBusy({ name: snapshotName, op: 'delete' });
+        setSnapshotError(null);
+        setSnapshotSuccess('');
         try {
             const response = await fetch(
-                `${API_BASE_URL}${API_ENDPOINTS.admin.deleteSnapshot(snapshotName, sessionId)}`,
-                { method: 'DELETE' }
+                `${API_BASE_URL}${API_ENDPOINTS.admin.deleteSnapshot(snapshotName)}`,
+                { method: 'DELETE', headers: authHeaders(sessionId) }
             );
             if (response.ok) {
-                setSuccess(`Deleted snapshot: ${snapshotName}`);
+                setSnapshotSuccess(`Deleted snapshot: ${snapshotName}`);
                 await fetchSnapshots();
             } else {
-                throw new Error('Failed to delete snapshot');
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Failed to delete snapshot (HTTP ${response.status})`);
             }
-        } catch (error) {
-            setError('Failed to delete snapshot');
+        } catch (error: any) {
+            setSnapshotError(error.message || 'Failed to delete snapshot');
         } finally {
+            setSnapshotBusy(null);
             setSnapshotToDelete(null);
         }
     };
@@ -513,8 +556,9 @@ const ContentManagement = () => {
         setSuccess('');
 
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.deleteBook(bookName, sessionId)}`, {
-                method: 'DELETE'
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.admin.deleteBook(bookName)}`, {
+                method: 'DELETE',
+                headers: authHeaders(sessionId)
             });
 
             const data = await response.json();
@@ -661,7 +705,7 @@ const ContentManagement = () => {
                         <CardDescription>PDF processing progress</CardDescription>
                     </CardHeader>
                     <CardContent>
-                        <div className="space-y-4">
+                        <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
                             {processingJobs.map((job, index) => (
                                 <div key={index} className="space-y-2">
                                     <div className="flex items-center justify-between">
@@ -682,6 +726,7 @@ const ContentManagement = () => {
                                                 {job.status === 'completed' ? 'Complete' :
                                                  job.status === 'failed' ? 'Failed' :
                                                  job.status === 'cancelled' ? 'Cancelled' :
+                                                 job.status === 'pending' || job.stage === 'pending' ? 'Waiting for available worker...' :
                                                  job.chapters_total && job.chapters_total > 0 &&
                                                  (job.chapters_processed || 0) < job.chapters_total &&
                                                  !job.stage?.includes('embedding') &&
@@ -690,7 +735,7 @@ const ContentManagement = () => {
                                                     : job.stage ? job.stage.replace(/_/g, ' ') : 'Processing...'}
                                             </span>
                                             {/* Show Cancel button for in-progress jobs, Dismiss button for finished jobs */}
-                                            {(job.status === 'queued' || job.status === 'processing') ? (
+                                            {(job.status === 'pending' || job.status === 'processing') ? (
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"
@@ -713,7 +758,17 @@ const ContentManagement = () => {
                                             )}
                                         </div>
                                     </div>
-                                    <Progress value={job.progress} className="h-2" />
+                                    <Progress
+                                        value={job.status === 'failed' || job.status === 'cancelled' ? 100 : job.progress}
+                                        className="h-2"
+                                        indicatorClassName={
+                                            job.status === 'failed'
+                                                ? 'bg-red-500'
+                                                : job.status === 'cancelled'
+                                                    ? 'bg-orange-400'
+                                                    : undefined
+                                        }
+                                    />
                                     {job.warning && (
                                         <div className="flex items-center gap-2 p-2 rounded bg-yellow-50 border border-yellow-200">
                                             <AlertTriangle className="h-4 w-4 text-yellow-600 flex-shrink-0" />
@@ -721,7 +776,10 @@ const ContentManagement = () => {
                                         </div>
                                     )}
                                     {job.error && (
-                                        <p className="text-sm text-red-500">{job.error}</p>
+                                        <div className="flex items-start gap-2 p-2 rounded bg-red-50 border border-red-200">
+                                            <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0 mt-0.5" />
+                                            <span className="text-sm text-red-700 break-words">{job.error}</span>
+                                        </div>
                                     )}
                                 </div>
                             ))}
@@ -769,6 +827,8 @@ const ContentManagement = () => {
                                             <div className="flex items-center gap-3">
                                                 {book.processing_status === 'processing' ? (
                                                     <Loader2 className="h-5 w-5 animate-spin text-yellow-500" />
+                                                ) : book.processing_status === 'cancelled' ? (
+                                                    <StopCircle className="h-5 w-5 text-orange-500" />
                                                 ) : (
                                                     <Book className="h-5 w-5" />
                                                 )}
@@ -778,6 +838,11 @@ const ContentManagement = () => {
                                                         {book.processing_status === 'processing' && (
                                                             <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium">
                                                                 Processing...
+                                                            </span>
+                                                        )}
+                                                        {book.processing_status === 'cancelled' && (
+                                                            <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-medium">
+                                                                Cancelled
                                                             </span>
                                                         )}
                                                     </div>
@@ -840,6 +905,7 @@ const ContentManagement = () => {
                                                     <p><strong>Total Chapters:</strong> {book.total_chapters}</p>
                                                     <p><strong>Total Chunks:</strong> {book.total_chunks}</p>
                                                     <p><strong>Status:</strong> {book.processing_status === 'completed' ? 'Complete' : book.processing_status === 'processing' ? 'Processing...' : book.processing_status || 'Unknown'}</p>
+                                                    <p><strong>Processing Method:</strong> {book.processing_method === 'default' ? 'Default' : book.processing_method === 'docling' ? 'Docling (layout-based)' : 'Unknown'}</p>
                                                 </div>
                                             </div>
                                         )}
@@ -859,6 +925,21 @@ const ContentManagement = () => {
                         <CardDescription>Backup and restore vector database snapshots</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
+                        {/* Snapshot status — rendered here so failures are visible next to the actions */}
+                        {snapshotError && (
+                            <Alert variant="destructive" className="rounded-xl">
+                                <AlertCircle className="h-4 w-4" />
+                                <AlertTitle>Snapshot error</AlertTitle>
+                                <AlertDescription>{snapshotError}</AlertDescription>
+                            </Alert>
+                        )}
+                        {snapshotSuccess && (
+                            <Alert className="rounded-xl bg-green-50 border-green-200">
+                                <AlertTitle className="text-green-800">Success</AlertTitle>
+                                <AlertDescription className="text-green-700">{snapshotSuccess}</AlertDescription>
+                            </Alert>
+                        )}
+
                         {/* Create Snapshot Button */}
                         <div className="flex items-center justify-between">
                             <div>
@@ -938,27 +1019,40 @@ const ContentManagement = () => {
                                                         size="sm"
                                                         className="rounded-xl bg-blue-600 text-white hover:bg-blue-700"
                                                         onClick={() => setSnapshotToRestore(snapshot.name)}
-                                                        disabled={processing || !snapshot.has_metadata}
+                                                        disabled={processing || !!snapshotBusy || !snapshot.has_metadata}
                                                         title={!snapshot.has_metadata ? 'Metadata required for restore' : ''}
                                                     >
-                                                        <Upload className="h-4 w-4 mr-1" />
-                                                        Restore
+                                                        {snapshotIsBusy(snapshot.name, 'restore') ? (
+                                                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                                        ) : (
+                                                            <Upload className="h-4 w-4 mr-1" />
+                                                        )}
+                                                        {snapshotIsBusy(snapshot.name, 'restore') ? 'Restoring...' : 'Restore'}
                                                     </Button>
                                                     <Button
                                                         size="sm"
                                                         className="rounded-xl bg-green-600 text-white hover:bg-green-700"
                                                         onClick={() => downloadSnapshot(snapshot.name)}
+                                                        disabled={!!snapshotBusy}
                                                     >
-                                                        <Download className="h-4 w-4 mr-1" />
+                                                        {snapshotIsBusy(snapshot.name, 'download') ? (
+                                                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                                        ) : (
+                                                            <Download className="h-4 w-4 mr-1" />
+                                                        )}
                                                         Snapshot
                                                     </Button>
                                                     <Button
                                                         size="sm"
                                                         className="rounded-xl bg-green-500 text-white hover:bg-green-600"
                                                         onClick={() => downloadMetadata(snapshot.name)}
-                                                        disabled={!snapshot.has_metadata}
+                                                        disabled={!!snapshotBusy || !snapshot.has_metadata}
                                                     >
-                                                        <FileJson className="h-4 w-4 mr-1" />
+                                                        {snapshotIsBusy(snapshot.name, 'metadata') ? (
+                                                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                                        ) : (
+                                                            <FileJson className="h-4 w-4 mr-1" />
+                                                        )}
                                                         Metadata
                                                     </Button>
                                                     <Button
@@ -966,8 +1060,13 @@ const ContentManagement = () => {
                                                         variant="destructive"
                                                         className="rounded-xl"
                                                         onClick={() => setSnapshotToDelete(snapshot.name)}
+                                                        disabled={!!snapshotBusy}
                                                     >
-                                                        <Trash2 className="h-4 w-4" />
+                                                        {snapshotIsBusy(snapshot.name, 'delete') ? (
+                                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                                        ) : (
+                                                            <Trash2 className="h-4 w-4" />
+                                                        )}
                                                     </Button>
                                                 </div>
                                             </div>

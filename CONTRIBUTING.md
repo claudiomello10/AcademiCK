@@ -113,10 +113,11 @@ AcademiCK/
 
 | File | Purpose |
 |------|---------|
-| `services/api-gateway/app/services/rag_orchestrator.py` | Main RAG pipeline |
+| `services/api-gateway/app/services/rag_orchestrator.py` | Main RAG pipeline (streams progress + answer tokens over SSE) |
 | `services/api-gateway/app/services/search_service.py` | Hybrid vector search |
+| `services/api-gateway/app/services/reasoning_agent.py` | Curation agent (Pydantic AI) that drops noise and fetches missing chunks |
 | `services/api-gateway/app/services/prompt_engineering.py` | Prompt templates |
-| `services/api-gateway/app/services/llm_service.py` | Multi-provider LLM client |
+| `services/api-gateway/app/services/agent_models.py` | `build_model()` factory — single place where model strings + reasoning effort map to provider-specific Pydantic AI models (OpenAI / Anthropic / DeepSeek) |
 | `services/api-gateway/app/routers/` | API endpoint handlers |
 | `services/api-gateway/app/clients/` | Service-to-service HTTP clients |
 

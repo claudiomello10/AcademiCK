@@ -48,7 +48,6 @@ class ChatRequest(BaseModel):
     """Chat request."""
     query: str = Field(..., min_length=1, max_length=10000)
     model: Optional[str] = None
-    book_filter: Optional[str] = None
 
 
 class SourceChunk(BaseModel):
@@ -67,6 +66,10 @@ class ChatResponse(BaseModel):
     sources: List[SourceChunk]
     model_used: str
     processing_time_ms: float
+    # Agentic RAG metadata (agent_tokens and agent_time_ms stay DB-only for admin analytics)
+    agent_actions: Optional[int] = None
+    agent_tool_calls: Optional[Dict[str, int]] = None
+    reasoning_trace: Optional[List[str]] = None
 
 
 class MessageHistory(BaseModel):
@@ -183,3 +186,20 @@ class SetSubjectRequest(BaseModel):
 class SubjectResponse(BaseModel):
     """Subject response."""
     subject: str
+
+
+# ===========================================
+# Models
+# ===========================================
+
+class ModelOption(BaseModel):
+    """A single model available in the frontend selector."""
+    provider: str
+    value: str
+    label: str
+
+
+class ModelsResponse(BaseModel):
+    """Available models and the default selection for the frontend."""
+    available: List[ModelOption]
+    default: str

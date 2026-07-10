@@ -18,46 +18,76 @@ The system is **subject-agnostic** — configure it for Machine Learning, Organi
 
 ## Features
 
-- **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with Reciprocal Rank Fusion for accurate retrieval
+- **Hybrid Vector Search** — Combines dense and sparse embeddings (BGE-M3) with intent-tuned weighted score fusion for accurate retrieval
 - **Intent-Aware Queries** — Custom classifier detects query type (Q&A, summarization, coding, search) and adapts behavior
-- **Multi-Provider LLM** — Choose between OpenAI, Anthropic, or DeepSeek models per query
-- **PDF Processing Pipeline** — Dual-method processing with LLM-based chapter detection and programmatic fallback
+- **Multi-Provider LLM** — Choose between OpenAI, Anthropic, DeepSeek, or self-hosted local models (vLLM, Ollama, …) per query
+- **Agentic Context Curation** — A tool-using agent searches and navigates the library under a fixed action budget, dropping noise and pulling in missing context before answer generation
+- **PDF Processing Pipeline** — Two-tier processing cascade: LLM-based and layout-based (Docling) with per-chunk page tracking
 - **Session Management** — Redis-backed sessions with conversation history and context
 - **Admin Dashboard** — Content management, user management, and usage statistics
-- **Fully Dockerized** — One command to start 11 services with health checks and auto-restart
+- **Fully Dockerized** — One command to start 10 services with health checks and auto-restart
 - **GPU & CPU Support** — GPU-accelerated embeddings with automatic CPU fallback
 
 ## Architecture
 
 ```
-                         +------------------+
-                         |      nginx       |
-                         |    (port 80)     |
-                         +--------+---------+
-                                  |
-            +---------------------+---------------------+
-            |                     |                     |
-   +--------v--------+   +--------v--------+   +--------v--------+
-   |    Frontend     |   |   API Gateway   |   |   PDF Service   |
-   |   (Next.js)     |   |   (FastAPI)     |   |   (FastAPI)     |
-   +-----------------+   +--------+--------+   +-----------------+
-                                  |
-         +------------+-----------+-----------+------------+
-         |            |           |           |            |
-+--------v---+ +------v-----+ +---v------+ +--v-------+ +--v---------+
-|  Intent    | | Embedding  | |  Qdrant  | |  Redis   | | PostgreSQL |
-| Classifier | |  Service   | | Vectors  | |  Cache   | |  Database  |
-+------------+ +------------+ +----------+ +----------+ +------------+
+                            +------------------+
+                            |      nginx       |
+                            |    (port 80)     |
+                            +--------+---------+
+                                     |
+               +---------------------+---------------------+
+               |                     |                     |
+      +--------v--------+   +--------v---------+   +-------v---------+
+      |    Frontend     |   |   API Gateway    |   |   PDF Service   |
+      |   (Next.js)     |   | +--------------+ |   |   (FastAPI)     |
+      +-----------------+   | |     RAG      | |   +-------+---------+
+                            | | Orchestrator | |           |
+                            | +------+-------+ |           |
+                            |        |         |           |
+                            | +------v-------+ |           |
+                            | |   Curation   | |           |
+                            | |    Agent     | |           |
+                            | +--------------+ |           |
+                            +------+-----------+           |
+                                   |                       |
+         +-----------+-------------+------------+----------+--+
+         |           |             |            |             |
++--------v--+ +------v-----+ +-----v----+ +-----v----+ +------v-----+
+|  Intent   | | Embedding  | |  Qdrant  | |  Redis   | | PostgreSQL |
+| Classifier| |  Service   | | Vectors  | |  Cache   | |  Database  |
++-----------+ +------------+ +----------+ +----------+ +------------+
+
+           LLM APIs: OpenAI / Anthropic / DeepSeek / Local (vLLM, Ollama, …)
 ```
 
 > All internal services communicate over an isolated Docker network. Only nginx is exposed to the host.
+
+### RAG Pipeline
+
+When a user sends a query, the API Gateway orchestrates the following stages:
+
+1. **Intent classification + Query resolution** (parallel)
+
+   - A fine-tuned classifier detects query type (Q&A, summarization, coding, search)
+   - A fast LLM resolves the query (pronouns/references replaced with actual terms from conversation history)
+2. **Agentic retrieval & context curation**
+
+   - A curation agent does all retrieval through tools under a single shared action budget (`AGENT_MAX_ACTIONS`): `search` fetches content and navigation tools (`list_chapters`, `list_topics`, `read_chapter`, `expand_context`) explore the library — every call spends one action, since each grows the context
+   - Hybrid search embeds each query and matches it against Qdrant; dense and sparse scores are min-max normalized and fused via an intent-tuned weighted sum
+   - It finishes with **APPROVE** (keep the curated chunks) or **NOT_IN_KB** — the agent never answers, it only curates
+3. **Answer generation** with curated context
+
+   - The main LLM receives curated chunks and generates a citation-backed response, streamed token-by-token
+
+All three LLM stages (query resolution, curation, answer) run through Pydantic AI with typed structured outputs. The chat endpoint (`POST /api/v1/chat`, authenticated via `Authorization: Bearer` header) streams pipeline progress and answer tokens to the UI as Server-Sent Events; a non-streaming variant is available at `/chat/single`.
 
 ## Quick Start
 
 ### Prerequisites
 
 - **Docker** and **Docker Compose** v2.0+
-- At least one LLM API key ([OpenAI](https://platform.openai.com/api-keys), [Anthropic](https://console.anthropic.com/), or [DeepSeek](https://platform.deepseek.com/))
+- At least one LLM provider: an API key ([OpenAI](https://platform.openai.com/api-keys), [Anthropic](https://console.anthropic.com/), or [DeepSeek](https://platform.deepseek.com/)), or a self-hosted OpenAI-compatible server (see [Local LLMs](docs/local-llms.md))
 - **16GB+ RAM** recommended for smooth performance
 - **NVIDIA GPU** with CUDA (recommended) — or set `EMBEDDING_DEVICE=cpu` for CPU-only mode
 
@@ -103,9 +133,9 @@ docker compose ps
 
 ### 3. Access the Application
 
-| URL                    | Description   |
-| ---------------------- | ------------- |
-| http://localhost       | Web interface |
+| URL                    | Description     |
+| ---------------------- | --------------- |
+| http://localhost       | Web interface   |
 | http://localhost/admin | Admin dashboard |
 
 ### 4. Login
@@ -117,22 +147,30 @@ Use the credentials you set in `.env`:
 
 ## Configuration
 
-Key settings in `.env` (see [.env.example](.env.example) for the full list):
+Key settings in `.env` (see [.env.example](.env.example) and [docs/USAGE.md](docs/USAGE.md) for the full list):
 
-| Variable              | Required     | Description                                        |
-| --------------------- | ------------ | -------------------------------------------------- |
-| `POSTGRES_PASSWORD` | Yes          | PostgreSQL password                                |
-| `REDIS_PASSWORD`    | Yes          | Redis authentication password                      |
-| `SESSION_SECRET`    | Yes          | Secret key for session encryption                  |
-| `ADMIN_PASSWORD`    | Yes          | Admin user password                                |
-| `GUEST_PASSWORD`    | Yes          | Guest user password                                |
-| `OPENAI_API_KEY`    | At least one | OpenAI API key                                     |
-| `ANTHROPIC_API_KEY` | At least one | Anthropic API key                                  |
-| `DEEPSEEK_API_KEY`  | At least one | DeepSeek API key                                   |
-| `DEFAULT_SUBJECT`   | No           | Academic subject (default: Machine Learning)       |
-| `DEFAULT_MODEL`     | No           | Default LLM model (default: gpt-5-mini)            |
-| `EMBEDDING_DEVICE`  | No           | Embedding device:`gpu` or `cpu` (default: gpu) |
-| `DOCS_ENABLED`      | No           | Enable Swagger UI (default: true)                  |
+| Variable                      | Required     | Description                                            |
+| ----------------------------- | ------------ | ------------------------------------------------------ |
+| `POSTGRES_PASSWORD`         | Yes          | PostgreSQL password                                    |
+| `REDIS_PASSWORD`            | Yes          | Redis authentication password                          |
+| `SESSION_SECRET`            | Yes          | Secret key for session encryption                      |
+| `ADMIN_PASSWORD`            | Yes          | Admin user password                                    |
+| `GUEST_PASSWORD`            | Yes          | Guest user password                                    |
+| `OPENAI_API_KEY`            | At least one | OpenAI API key                                         |
+| `ANTHROPIC_API_KEY`         | At least one | Anthropic API key                                      |
+| `DEEPSEEK_API_KEY`          | At least one | DeepSeek API key                                       |
+| `LOCAL_LLM_BASE_URL`        | No           | OpenAI-compatible URL for a self-hosted LLM (default: `http://host.docker.internal:8000/v1`). See [Local LLMs](docs/local-llms.md) |
+| `LOCAL_LLM_API_KEY`         | No           | Token for the local LLM server (default: `EMPTY`)      |
+| `DEFAULT_SUBJECT`           | No           | Academic subject (default: Machine Learning)           |
+| `AVAILABLE_MODELS`          | Yes          | JSON array of models for the frontend dropdown; each `value` needs a `provider/` prefix (`openai/`, `anthropic/`, `deepseek/`, `local/`) |
+| `DEFAULT_MODEL_FRONTEND`    | Yes          | Initially-selected model (a `value` in `AVAILABLE_MODELS`) |
+| `AGENT_MAX_ACTIONS`         | No           | Shared tool-call budget for the curation agent (default: 8) |
+| `REASONING_TRACE_VISIBLE`   | No           | Expose the agent's reasoning trace in the chat UI (default: false) |
+| `EMBEDDING_DEVICE`          | No           | Embedding device:`gpu` or `cpu` (default: gpu)     |
+| `CHUNK_SIZE`                | No           | Chunk size in chars for PDF processing (default: 3000) |
+| `CELERY_WORKER_CONCURRENCY` | No           | Parallel PDF processing workers (default: 2)           |
+| `OMP_NUM_THREADS`           | No           | OpenMP threads for Docling/PyTorch (default: 4)        |
+| `DOCS_ENABLED`              | No           | Enable Swagger UI (default: true)                      |
 
 ## Services
 
@@ -154,6 +192,11 @@ Key settings in `.env` (see [.env.example](.env.example) for the full list):
 | Document                     | Description                                                    |
 | ---------------------------- | -------------------------------------------------------------- |
 | [Usage Guide](docs/USAGE.md)    | API examples, admin dashboard, PDF processing, troubleshooting |
+| [Local LLMs](docs/local-llms.md) | Run against a self-hosted LLM (vLLM, Ollama, …) and provider routing |
+| [Database Schema](docs/database.md) | PostgreSQL tables, relationships, and analytics            |
+| [Vector Store](docs/qdrant.md)  | Qdrant collection, vectors, payload, and retrieval             |
+| [Testing](docs/testing.md)      | Test suites, tiers, what each test verifies, how to add more   |
+| [Known Issues](docs/KNOWN_ISSUES.md) | Logged problems, root causes, and workarounds            |
 | [Security Policy](SECURITY.md)  | Vulnerability reporting and deployment best practices          |
 | [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process                      |
 | [.env.example](.env.example)    | All configuration options with descriptions                    |

@@ -21,6 +21,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ ./app/
 
+# Run as non-root; the model cache lives under /app so the model_cache
+# volume is seeded with app ownership on first creation.
+ENV HF_HOME=/app/.cache/huggingface
+RUN groupadd --system --gid 1000 app && useradd --system --uid 1000 --gid app app \
+    && mkdir -p /app/.cache/huggingface \
+    && chown -R app:app /app
+USER app
+
 # Expose port
 EXPOSE 8002
 

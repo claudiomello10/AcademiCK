@@ -2,6 +2,8 @@
 
 from typing import List, Dict, Optional
 
+from app.config import settings
+
 
 def get_rag_system_prompt(
     intent: str,
@@ -42,9 +44,11 @@ def format_context(chunks: List[Dict]) -> str:
         chapter_title = chunk.get('chapter_title', 'Unknown')
         topic = chunk.get('topic', '')
         text = chunk.get('text', '')
+        page_number = chunk.get('page_number')
+        page_str = f" - Page: {page_number}" if page_number else ""
 
         formatted.append(
-            f"Retrieval {i}: From Book: {book_name} - Chapter {chapter_title} - Section: {topic}\n{text}"
+            f"Retrieval {i}: From Book: {book_name} - Chapter {chapter_title} - Section: {topic}{page_str}\n{text}"
         )
 
     return "\n\n".join(formatted)
@@ -137,60 +141,156 @@ Here is the context for the user query retrieved from the books:
 """
 
 
-def get_enhanced_query_prompt(query: str, subject: str, available_books: List[str], conversation_history: List[Dict] = None) -> str:
+def get_enhancement_system_prompt(subject: str) -> str:
+    """Static system prompt for the query resolution agent.
+
+    The conversation history is supplied via Pydantic AI's message_history
+    parameter; the user query is the user prompt. Retrieval is handled later by
+    the curation agent's tools, so this agent only resolves/summarizes the task.
     """
-    Generate prompt for query enhancement.
+    return f"""You are a query resolution agent for an academic system about {subject}.
 
-    Used to generate multiple focused search queries from a user query.
+Produce a single field:
+- resolved_query: the student's question with all references resolved (e.g.,
+  "that", "it", "the previous topic") using the conversation history. It must be
+  a minimal rewrite — only replace pronouns and references with the actual terms
+  they refer to. Do NOT add information, elaborate, explain concepts, translate,
+  or expand. If the query is already self-contained, repeat it exactly as-is.
+  When a <Book>name</Book> tag appears, simply replace it with "the book name"
+  (or "o livro name" if the student writes in Portuguese). Examples:
+    - "Explain <Book>biscect-kmeans</Book>" → "Explain the book biscect-kmeans"
+    - "Explique <Book>biscect-kmeans</Book>" → "Explique o livro biscect-kmeans"
+    - "What was that concept about?" (previous topic was gradient descent)
+      → "What was gradient descent about?\""""
+
+
+def format_context_numbered(chunks: List[Dict]) -> str:
+    """Format context chunks with numbered indices and truncated text for the curation agent."""
+    if not chunks:
+        return "No chunks available."
+
+    formatted = []
+    for i, chunk in enumerate(chunks, 1):
+        book_name = chunk.get('book_name', 'Unknown')
+        chapter_title = chunk.get('chapter_title', 'Unknown')
+        topic = chunk.get('topic', '')
+        text = chunk.get('text', '')
+        page_number = chunk.get('page_number')
+        page_str = f" - Page: {page_number}" if page_number else ""
+
+        # Truncate text to ~300 chars for cost efficiency
+        preview = text[:300] + "..." if len(text) > 300 else text
+
+        formatted.append(
+            f"[{i}] From Book: {book_name} - Chapter {chapter_title} - Section: {topic}{page_str}\n    {preview}"
+        )
+
+    return "\n\n".join(formatted)
+
+
+def get_curation_system_prompt(subject: str, available_books: List[str]) -> str:
+    """Static system prompt for the curation agent — set once per request.
+
+    Behavior, the tool catalogue with budgets, and the available-books list.
+    The query and initial numbered context go in the user prompt.
     """
-    books_list = "\n".join(f"- {book}" for book in available_books[:10]) if available_books else "No specific books available"
+    books_list = (
+        "\n".join(f"- {book}" for book in available_books)
+        if available_books
+        else "No specific books available"
+    )
 
-    conversation_context = ""
-    if conversation_history:
-        for msg in conversation_history[-6:]:  # Last 6 messages
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "assistant":
-                conversation_context += f"<Assistant message>\n{content}\n</Assistant message>\n"
-            else:
-                conversation_context += f"<User message>\n{content}\n</User message>\n"
+    return f"""You are a context curation agent for an academic RAG system about {subject}.
+You do NOT answer the student. Your job is to assemble the best possible set of
+context chunks for a separate LLM that will write the final answer.
 
-    return f"""You are a specialized RAG (Retrieval-Augmented Generation) search term generator. Your task is to generate up to 3 focused search queries between <retrievalX> tags that:
+You begin with NO retrieved context — gathering it is your job, done entirely
+through tools. The numbered context list (shown in the user message, initially
+empty) grows as tools add chunks; every tool result shows the new chunks with
+their 1-indexed positions and your remaining action budget.
 
-- Target specific textbook content
-- Use formal academic terminology
-- Focus on fundamental concepts, definitions, theorems
-- Break complex queries into core components
-- Maximize relevant context retrieval
-- Only focus on a specific book if the user requires it
-- If a specific book is mentioned in a past message, if its not necessary to use the book, use book="all" or another book.
+You have ONE shared budget of {settings.agent_max_actions} actions. EVERY tool
+call — search or navigation — spends one action. Nothing is free: each call also
+appends to the context and makes every later call more expensive in tokens. So
+act deliberately and stop as soon as you can answer.
 
-Guidelines for search queries:
+Curate as you go — this is mandatory. Every tool REQUIRES a keep=[indices]
+argument: the 1-indexed positions of the currently-live chunks you want to
+retain. Any live chunk you do NOT list is permanently dropped in that same move
+(no extra action). Every tool result ends with the current "live chunks: [...]"
+list — build your next keep from it. A search often returns many chunks and only
+a few matter, so your keep should name just those. On your first call nothing is
+gathered yet, so pass keep=[]. Dropped chunks leave the context and stop costing
+tokens; indices are stable, so dropping never renumbers anything. (New chunks a
+tool just added are always kept for now — you review them on your next call.)
 
-- Use domain-specific technical vocabulary and terminology
-- Include key theorems, laws, or principles by their formal names
-- Focus on foundational concepts as they would appear in academic texts
-- Target textbook sections and chapter topics using standard academic organization
-- Break down complex queries into simpler, core components
-- Use keywords that maximize relevant context retrieval
-- Try to find exactly what the user is looking for
-- The search queries should all be focused on the same topic, but they should be different.
-- It is ok to use similar queries on different retrieval sentences, this will help to find the information in the books.
-- If a specific book is mentioned in the query using the format <Book>name_of_the_book</Book>, target your search queries to that book by setting book="name_of_the_book".
-- If no specific book is mentioned or if the search should be performed across all available resources, use book="all".
-- Focus only on search term generation. Do not provide explanations or answers.
-- The subject of the conversation is {subject}.
+Tools (each costs one action):
+- search(queries): semantic search — your main way to fetch content. Batch up to
+  {settings.agent_max_queries_per_search} declarative, textbook-style queries into
+  a single call (each may target a specific book); one call spends one action no
+  matter how many queries, so prefer batching over multiple calls.
+- list_chapters(books, include_topics=False): the chapter outline of up to 3
+  books. By default returns just chapter titles — keep it that way for a broad
+  overview. Only pass include_topics=True when you genuinely need each chapter's
+  topics in the same call; it is more verbose.
+- list_topics(chapters): the topics inside up to 3 chapters.
+- read_chapter(book, chapter, mode): read a chapter's introduction (mode="intro")
+  or full text (mode="full").
+- expand_context(chunk): pull chunks adjacent to a context chunk when a passage
+  looks cut off at a boundary.
 
-{conversation_context}
+Strategy — be good without being wasteful:
+- For substantive content questions, search is usually your first and best move;
+  batch several queries into one search call. For pure structure questions
+  ("what is in book X"), a single list_chapters can answer it.
+- For broad "what is in book X" questions, stay broad: call list_chapters and
+  KEEP the returned outline chunk — that outline IS the answer. Do NOT read or
+  search individual chapters for these questions; only go into a specific chapter
+  when the student explicitly asks about that chapter or a concept inside it.
+- Watch the action counter in every tool result and stop calling tools once the
+  context is sufficient — spare actions are not a reason to keep exploring.
 
-Output format:
-<retrieval1 book="all">search query 1</retrieval1>
-<retrieval2 book="book_name">search query 2</retrieval2>
-<retrieval3 book="book_name">search query 3</retrieval3>
+Navigation tools add their result to the context list as a numbered chunk and
+tell you its index — those outline/topic chunks are real context, so include
+their indices in keep_indices whenever they help answer the question.
 
-<Current User Message>
-{query}
-</Current User Message>
+search() query rules: write declarative textbook-style statements, not questions
+or commands. Use precise technical terms. Avoid navigational phrasing like
+"table of contents" or "introduction to X" — those never match content.
 
-The user response format demands should not affect the search term generation. The search term generation should be focused on generating the search terms that will be used to retrieve the information from the books.
-"""
+Final decision (structured output):
+- action: "APPROVE" when the assembled context can answer the query, or
+  "NOT_IN_KB" when you are confident the topic is absent from all books and more
+  searching would be futile (the system then returns a fixed "not found" message).
+  Do not use NOT_IN_KB just because chunks are noisy.
+- reasoning: a brief justification.
+- keep_indices: 1-indexed positions still in context to keep (already-dropped
+  chunks are gone). Keep only what the answer needs — less noise, better answer.
+
+Available books:
+{books_list}"""
+
+
+def get_curation_user_prompt(query: str, context_chunks: List[Dict]) -> str:
+    """Initial user prompt for the curation agent.
+
+    The query should already have references resolved (e.g., "explain that
+    further" → "explain backpropagation further") by the query resolution step.
+    """
+    if context_chunks:
+        context_section = (
+            "Current context chunks:\n\n"
+            + format_context_numbered(context_chunks)
+        )
+    else:
+        context_section = (
+            "No context has been retrieved yet — use your tools to gather it "
+            "(search for content; list_chapters / list_topics to explore)."
+        )
+
+    return f"""The student asked: "{query}"
+
+{context_section}
+
+Gather what you need with tools, then return your structured decision with the
+chunks worth keeping."""

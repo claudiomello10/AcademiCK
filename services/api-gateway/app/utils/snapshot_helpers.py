@@ -177,7 +177,7 @@ async def reconstruct_from_qdrant(conn: Connection, qdrant_manager) -> Dict[str,
         points_scanned = 0
 
         while True:
-            result = qdrant_manager.client.scroll(
+            result = await qdrant_manager.client.scroll(
                 collection_name=qdrant_manager.collection,
                 limit=1000,
                 offset=offset,

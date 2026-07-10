@@ -1,7 +1,7 @@
 """Session management service using Redis + PostgreSQL persistence."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4, UUID
 from typing import Optional, List, Dict, Any
 from redis import asyncio as aioredis
@@ -44,7 +44,7 @@ class SessionService:
         Writes to both Redis (cache) and PostgreSQL (persistence).
         """
         session_id = str(uuid4())
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expires_at = now + self.session_ttl
 
         # Create session and conversation in PostgreSQL
@@ -148,7 +148,7 @@ class SessionService:
                 messages = await self._load_messages_from_postgres(conn, UUID(conversation_id))
 
             # Update last_active in PostgreSQL
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             await conn.execute("""
                 UPDATE sessions SET last_active = $1, expires_at = $2
                 WHERE session_token = $3
@@ -195,7 +195,7 @@ class SessionService:
                 "role": row['role'],
                 "content": row['content'],
                 "intent": row['intent'],
-                "timestamp": row['created_at'].isoformat() if row['created_at'] else datetime.utcnow().isoformat()
+                "timestamp": row['created_at'].isoformat() if row['created_at'] else datetime.now(timezone.utc).isoformat()
             }
             for row in rows
         ]
@@ -227,7 +227,7 @@ class SessionService:
             return False
 
         session.update(updates)
-        session["last_active"] = datetime.utcnow().isoformat()
+        session["last_active"] = datetime.now(timezone.utc).isoformat()
 
         await self.redis.setex(
             f"{self.prefix}{session_id}",
@@ -253,7 +253,7 @@ class SessionService:
 
         # Persist to PostgreSQL
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             async with self.db_pool.acquire() as conn:
                 await conn.execute("""
                     UPDATE sessions SET subject = $1, last_active = $2
@@ -300,7 +300,7 @@ class SessionService:
             logger.error(f"No conversation_id found for session {session_id}")
             return None
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         message_id = str(uuid4())
 
         async with self.db_pool.acquire() as conn:
@@ -414,7 +414,7 @@ class SessionService:
                 await conn.execute("""
                     UPDATE sessions SET is_active = false, last_active = $1
                     WHERE session_token = $2
-                """, datetime.utcnow(), session_id)
+                """, datetime.now(timezone.utc), session_id)
 
             # Remove user session mapping
             user_id = session.get("user_id")
@@ -448,7 +448,7 @@ class SessionService:
 
         user_id = session.get("user_id")
         subject = session.get("subject", settings.default_subject)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         conversation_id = str(uuid4())
 
         async with self.db_pool.acquire() as conn:
@@ -568,7 +568,7 @@ class SessionService:
             await conn.execute("""
                 UPDATE conversations SET title = $1, updated_at = $2
                 WHERE id = $3
-            """, title[:255], datetime.utcnow(), UUID(conversation_id))
+            """, title[:255], datetime.now(timezone.utc), UUID(conversation_id))
 
         return True
 

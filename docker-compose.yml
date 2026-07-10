@@ -77,7 +77,7 @@ services:
       - BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-16}
       - MODEL_NAME=BAAI/bge-m3
     volumes:
-      - model_cache:/root/.cache/huggingface
+      - model_cache:/app/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -104,7 +104,7 @@ services:
       - DEVICE=cpu
       - MODEL_NAME=claudiomello/AcademiCK-intent-classifier
     volumes:
-      - model_cache:/root/.cache/huggingface
+      - model_cache:/app/.cache/huggingface
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -134,23 +134,66 @@ services:
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET must be set in .env}
       - SESSION_TTL_MINUTES=${SESSION_TTL_MINUTES:-30}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost}
       - CONFIG_USERS_ENABLED=${CONFIG_USERS_ENABLED:-true}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
       - GUEST_PASSWORD=${GUEST_PASSWORD:?GUEST_PASSWORD must be set in .env}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      # Local / self-hosted OpenAI-compatible endpoint (used by "local/" models).
+      # host.docker.internal reaches an LLM server on the same host (see extra_hosts);
+      # use a LAN IP/hostname for a remote server, or a compose service name.
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      - LOCAL_LLM_API_KEY=${LOCAL_LLM_API_KEY:-EMPTY}
       - ENABLE_SNAPSHOT_MANAGEMENT=${ENABLE_SNAPSHOT_MANAGEMENT:-true}
       - ENABLE_PDF_UPLOAD=${ENABLE_PDF_UPLOAD:-true}
       - DOCS_ENABLED=${DOCS_ENABLED:-true}
+      # Frontend model selector (served at runtime via GET /api/v1/models)
+      - AVAILABLE_MODELS=${AVAILABLE_MODELS}
+      - DEFAULT_MODEL_FRONTEND=${DEFAULT_MODEL_FRONTEND}
+      # RAG pipeline tuning (per-stage models, reasoning effort, search weights)
+      - QUERY_ENHANCEMENT_MODEL=${QUERY_ENHANCEMENT_MODEL:-openai/gpt-5-nano}
+      - QUERY_ENHANCEMENT_REASONING=${QUERY_ENHANCEMENT_REASONING:-none}
+      - RAG_REASONING=${RAG_REASONING:-none}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-16384}
+      - TOP_K_SEARCHING=${TOP_K_SEARCHING:-10}
+      - TOP_K_DEFAULT=${TOP_K_DEFAULT:-6}
+      - LIBRARY_MAP_CACHE_TTL=${LIBRARY_MAP_CACHE_TTL:-300}
+      - SEARCH_WEIGHT_QA_DENSE=${SEARCH_WEIGHT_QA_DENSE:-0.6}
+      - SEARCH_WEIGHT_QA_SPARSE=${SEARCH_WEIGHT_QA_SPARSE:-0.4}
+      - SEARCH_WEIGHT_SUMMARIZATION_DENSE=${SEARCH_WEIGHT_SUMMARIZATION_DENSE:-0.7}
+      - SEARCH_WEIGHT_SUMMARIZATION_SPARSE=${SEARCH_WEIGHT_SUMMARIZATION_SPARSE:-0.3}
+      - SEARCH_WEIGHT_CODING_DENSE=${SEARCH_WEIGHT_CODING_DENSE:-0.4}
+      - SEARCH_WEIGHT_CODING_SPARSE=${SEARCH_WEIGHT_CODING_SPARSE:-0.6}
+      - SEARCH_WEIGHT_SEARCHING_DENSE=${SEARCH_WEIGHT_SEARCHING_DENSE:-0.5}
+      - SEARCH_WEIGHT_SEARCHING_SPARSE=${SEARCH_WEIGHT_SEARCHING_SPARSE:-0.5}
+      # Agentic RAG
+      - AGENT_MAX_ACTIONS=${AGENT_MAX_ACTIONS:-8}
+      - AGENT_MAX_QUERIES_PER_SEARCH=${AGENT_MAX_QUERIES_PER_SEARCH:-3}
+      - AGENT_NAV_MAX_ITEMS=${AGENT_NAV_MAX_ITEMS:-3}
+      - AGENT_READ_CHAPTER_FULL_ENABLED=${AGENT_READ_CHAPTER_FULL_ENABLED:-false}
+      - AGENT_CURATION_MODEL=${AGENT_CURATION_MODEL:-openai/gpt-5-nano}
+      - AGENT_CURATION_REASONING=${AGENT_CURATION_REASONING:-none}
+      - AGENT_CURATION_TIMEOUT=${AGENT_CURATION_TIMEOUT:-150}
+      - AGENT_CURATION_MAX_TOKENS=${AGENT_CURATION_MAX_TOKENS:-8192}
+      - AGENT_MAX_CONTEXT_CHUNKS=${AGENT_MAX_CONTEXT_CHUNKS:-18}
+      - REASONING_TRACE_VISIBLE=${REASONING_TRACE_VISIBLE:-false}
+      - DEFAULT_SUBJECT=${DEFAULT_SUBJECT:-Machine Learning}
     volumes:
-      - ./data/qdrant_snapshots:/app/snapshots
+      # Metadata JSONs only — snapshot binaries live in Qdrant and are proxied
+      # over its HTTP API. A named volume inherits the image's app-owned dir,
+      # so the non-root container can always write it.
+      - snapshot_metadata:/app/snapshots
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+    # Reach an LLM server running on the host (outside Docker) via host.docker.internal.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - academick-network
     restart: unless-stopped
@@ -179,9 +222,18 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      # Endpoint for PDF chapter detection (routed by "provider/" prefix).
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      - LOCAL_LLM_API_KEY=${LOCAL_LLM_API_KEY:-EMPTY}
+      - PDF_CHAPTER_DETECTION_MODEL=${PDF_CHAPTER_DETECTION_MODEL:-openai/gpt-5-nano}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s
@@ -205,7 +257,7 @@ services:
       context: ./services/pdf-service
       dockerfile: Dockerfile
     container_name: academick-pdf-worker
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-2}
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-academick}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-academick}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
@@ -214,9 +266,18 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-academick_embeddings}
       - EMBEDDING_SERVICE_URL=http://embedding-service:8002
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      # Endpoint for PDF chapter detection (routed by "provider/" prefix).
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      - LOCAL_LLM_API_KEY=${LOCAL_LLM_API_KEY:-EMPTY}
+      - PDF_CHAPTER_DETECTION_MODEL=${PDF_CHAPTER_DETECTION_MODEL:-openai/gpt-5-nano}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     volumes:
       - ./Livros:/app/uploads:ro
       - pdf_uploads:/app/processed
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
       interval: 30s
@@ -261,7 +322,7 @@ services:
   # For debugging internal services, use: docker compose exec <service> <command>
 
   nginx:
-    image: nginx:alpine
+    image: nginx:1.29.3-alpine
     container_name: academick-nginx
     volumes:
       - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
@@ -294,4 +355,6 @@ volumes:
   model_cache:
     driver: local
   pdf_uploads:
+    driver: local
+  snapshot_metadata:
     driver: local

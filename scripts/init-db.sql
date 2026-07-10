@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS books (
     total_pages INTEGER,
     total_chunks INTEGER DEFAULT 0,
     processing_status VARCHAR(50) DEFAULT 'pending'
-        CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
+        CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
+    processing_method VARCHAR(50) DEFAULT NULL,
     error_message TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -176,8 +177,8 @@ CREATE INDEX IF NOT EXISTS idx_chunk_retrievals_created ON chunk_retrievals(crea
 CREATE TABLE IF NOT EXISTS processing_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_type VARCHAR(50) NOT NULL CHECK (job_type IN ('pdf_processing', 'reindex', 'migration', 'embedding_update')),
-    status VARCHAR(50) DEFAULT 'queued'
-        CHECK (status IN ('queued', 'processing', 'completed', 'failed', 'cancelled')),
+    status VARCHAR(50) DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
     book_id UUID REFERENCES books(id) ON DELETE SET NULL,
     progress FLOAT DEFAULT 0 CHECK (progress >= 0 AND progress <= 1),
     error_message TEXT,
@@ -206,6 +207,18 @@ CREATE TABLE IF NOT EXISTS usage_stats (
     tokens_consumed INTEGER,
     intent VARCHAR(100),
     success BOOLEAN DEFAULT true,
+    agent_actions INTEGER DEFAULT 0,
+    agent_search_calls INTEGER DEFAULT 0,
+    agent_list_chapters_calls INTEGER DEFAULT 0,
+    agent_list_topics_calls INTEGER DEFAULT 0,
+    agent_read_chapter_calls INTEGER DEFAULT 0,
+    agent_expand_context_calls INTEGER DEFAULT 0,
+    agent_pool_chunks INTEGER DEFAULT 0,
+    agent_dropped_chunks INTEGER DEFAULT 0,
+    agent_final_chunks INTEGER DEFAULT 0,
+    agent_not_in_kb BOOLEAN DEFAULT false,
+    agent_tokens INTEGER DEFAULT 0,
+    agent_time_ms INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     metadata JSONB DEFAULT '{}'
 );
