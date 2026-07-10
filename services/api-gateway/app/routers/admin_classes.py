@@ -170,3 +170,43 @@ async def admin_list_professors(
     request: Request, session: dict = Depends(get_admin_session)
 ):
     return await list_professors(request.app.state.db_pool)
+
+
+@router.get("/classes/{class_id}/books")
+async def admin_list_class_books(
+    request: Request, class_id: str, session: dict = Depends(get_admin_session)
+):
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_class(conn, class_id)
+        return {"books": await class_service.list_class_books(conn, class_id)}
+
+
+@router.post("/classes/{class_id}/books/{book_id}/attach")
+async def admin_attach_book(
+    request: Request,
+    class_id: str,
+    book_id: str,
+    session: dict = Depends(get_admin_session),
+):
+    """Attach any book to any class (how legacy/global books reach classes)."""
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_class(conn, class_id)
+        book = await class_service.attach_book(
+            conn, class_id, book_id, session["user_id"]
+        )
+    await class_service.flush_search_cache(request.app.state.redis)
+    return {"message": f"Attached '{book['name']}'", "book": book}
+
+
+@router.delete("/classes/{class_id}/books/{book_id}/detach")
+async def admin_detach_book(
+    request: Request,
+    class_id: str,
+    book_id: str,
+    session: dict = Depends(get_admin_session),
+):
+    async with request.app.state.db_pool.acquire() as conn:
+        await class_service.get_class(conn, class_id)
+        await class_service.detach_book(conn, class_id, book_id)
+    await class_service.flush_search_cache(request.app.state.redis)
+    return {"message": "Book detached"}

@@ -69,11 +69,12 @@ async def test_resume_unknown_conversation_is_404(client, guest_token):
 
 
 async def test_clear_history_empties_the_conversation(
-    client, guest_token, seed_book, fake_llm
+    client, guest_token, guest_classroom, seed_book, fake_llm
 ):
     from tests.conftest import BOOK_TOPICS
 
-    await seed_book()
+    book = await seed_book()
+    await guest_classroom["attach"](book["id"])
     r = await client.post(
         "/api/v1/chat",
         json={"query": BOOK_TOPICS[0]["question"]},

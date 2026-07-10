@@ -284,6 +284,50 @@ async def seed_book(app):
 
 
 @pytest.fixture
+async def guest_classroom(app, client, admin_token, guest_token, make_user):
+    """A class the guest is enrolled in and has selected as active.
+
+    Chat and book listings are class-scoped, so tests exercising them enroll
+    the guest here and attach seeded books via `attach(book_id)`.
+    """
+    professor = await make_user(role="professor")
+    r = await client.post(
+        "/api/v1/professor/classes",
+        json={"name": f"guest-class-{uuid.uuid4().hex[:8]}", "subject": "Machine Learning"},
+        headers=auth(professor["token"]),
+    )
+    assert r.status_code == 200, r.text
+    cls = r.json()
+
+    async with app.state.db_pool.acquire() as conn:
+        guest_id = await conn.fetchval("SELECT id FROM users WHERE username = 'guest'")
+    r = await client.post(
+        f"/api/v1/admin/classes/{cls['id']}/students",
+        json={"user_id": str(guest_id)},
+        headers=auth(admin_token),
+    )
+    assert r.status_code == 200, r.text
+
+    r = await client.post(
+        "/api/v1/session/class",
+        json={"class_id": cls["id"]},
+        headers=auth(guest_token),
+    )
+    assert r.status_code == 200, r.text
+
+    async def attach(book_id: str) -> None:
+        r = await client.post(
+            f"/api/v1/admin/classes/{cls['id']}/books/{book_id}/attach",
+            headers=auth(admin_token),
+        )
+        assert r.status_code == 200, r.text
+
+    yield {"id": cls["id"], "join_code": cls["join_code"], "attach": attach,
+           "professor": professor}
+    # Class rows cascade when make_user removes the professor.
+
+
+@pytest.fixture
 def fake_llm(monkeypatch):
     """Replace both model factories with deterministic test models.
 

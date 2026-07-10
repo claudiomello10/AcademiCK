@@ -74,6 +74,7 @@ class CurationDeps:
     library_map: Dict[str, Dict[str, List[str]]]
     intent: str
     top_k: int
+    allowed_books: Optional[List[str]] = None
     progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
     context_pool: List[Dict] = field(default_factory=list)
     seen_hashes: set = field(default_factory=set)
@@ -274,7 +275,8 @@ async def search(
         for q in queries[: settings.agent_max_queries_per_search]
     ]
     results = await deps.search_service.search_with_enhanced_queries(
-        queries=resolved, intent=deps.intent, top_k=deps.top_k
+        queries=resolved, intent=deps.intent, top_k=deps.top_k,
+        allowed_books=deps.allowed_books,
     )
     added = deps.add_chunks(results)
     deps.reasoning_trace.append(
@@ -486,6 +488,7 @@ class CurationAgent:
         subject: str,
         initial_chunks: List[Dict],
         top_k: int,
+        allowed_books: Optional[List[str]] = None,
         progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> AgentResult:
         try:
@@ -495,6 +498,7 @@ class CurationAgent:
                 subject=subject,
                 initial_chunks=initial_chunks,
                 top_k=top_k,
+                allowed_books=allowed_books,
                 progress=progress,
             )
         except CurationTimeoutError:
@@ -519,17 +523,24 @@ class CurationAgent:
         subject: str,
         initial_chunks: List[Dict],
         top_k: int,
+        allowed_books: Optional[List[str]] = None,
         progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> AgentResult:
         agent_start = time.time()
 
         library_map = await self.qdrant.get_library_map()
+        # Class scope: the agent's tools and prompt derive every book they can
+        # see from this map, so filtering it closes the whole agent surface.
+        if allowed_books is not None:
+            allowed_set = set(allowed_books)
+            library_map = {b: v for b, v in library_map.items() if b in allowed_set}
         deps = CurationDeps(
             search_service=self.search_service,
             qdrant=self.qdrant,
             library_map=library_map,
             intent=intent,
             top_k=top_k,
+            allowed_books=allowed_books,
             progress=progress,
         )
         deps.add_chunks(initial_chunks)

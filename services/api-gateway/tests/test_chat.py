@@ -28,9 +28,10 @@ def parse_sse(text: str) -> list:
 
 
 async def test_chat_single_cites_seeded_book(
-    client, guest_token, seed_book, fake_llm
+    client, guest_token, guest_classroom, seed_book, fake_llm
 ):
     book = await seed_book()
+    await guest_classroom["attach"](book["id"])
     r = await client.post(
         "/api/v1/chat/single",
         json={"query": BOOK_TOPICS[0]["question"]},
@@ -44,10 +45,12 @@ async def test_chat_single_cites_seeded_book(
 
 
 async def test_chat_book_filter_only_cites_that_book(
-    client, guest_token, seed_book, fake_llm
+    client, guest_token, guest_classroom, seed_book, fake_llm
 ):
-    await seed_book(topic=0)
+    book_a = await seed_book(topic=0)
     book_b = await seed_book(topic=1)
+    await guest_classroom["attach"](book_a["id"])
+    await guest_classroom["attach"](book_b["id"])
     fake_llm["book"] = book_b["name"]
     fake_llm["query"] = f"{BOOK_TOPICS[1]['question']} ({uuid.uuid4().hex[:8]})"
 
@@ -63,8 +66,10 @@ async def test_chat_book_filter_only_cites_that_book(
 
 
 async def test_chat_not_in_kb_returns_answer_without_sources(
-    client, guest_token, fake_llm
+    client, guest_token, guest_classroom, seed_book, fake_llm
 ):
+    book = await seed_book()
+    await guest_classroom["attach"](book["id"])
     fake_llm["decision"] = "NOT_IN_KB"
     r = await client.post(
         "/api/v1/chat/single",
@@ -77,10 +82,35 @@ async def test_chat_not_in_kb_returns_answer_without_sources(
     assert body["response"]
 
 
+async def test_chat_requires_active_class(client, guest_token, fake_llm):
+    r = await client.post(
+        "/api/v1/chat/single",
+        json={"query": "no class selected"},
+        headers=auth(guest_token),
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "no_active_class"
+
+
+async def test_chat_in_class_without_books_short_circuits(
+    client, guest_token, guest_classroom, fake_llm
+):
+    r = await client.post(
+        "/api/v1/chat/single",
+        json={"query": "anything at all"},
+        headers=auth(guest_token),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["sources"] == []
+    assert "não tem livros" in body["response"]
+
+
 async def test_chat_stream_emits_done_and_persists_history(
-    client, guest_token, seed_book, fake_llm
+    client, guest_token, guest_classroom, seed_book, fake_llm
 ):
     book = await seed_book()
+    await guest_classroom["attach"](book["id"])
     r = await client.post(
         "/api/v1/chat",
         json={"query": BOOK_TOPICS[0]["question"]},
@@ -103,7 +133,7 @@ async def test_chat_stream_emits_done_and_persists_history(
 
 
 async def test_chat_rejects_when_conversation_full(
-    app, client, guest_token, fake_llm
+    app, client, guest_token, guest_classroom, fake_llm
 ):
     session = await app.state.session_service.get_session(guest_token)
     async with app.state.db_pool.acquire() as conn:

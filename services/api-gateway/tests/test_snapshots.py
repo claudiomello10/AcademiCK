@@ -115,8 +115,8 @@ async def test_snapshot_roundtrip_restores_deleted_book(
         assert post_chapters == pre_chapters
 
         # And the product sees it again.
-        r = await client.get("/api/v1/books", headers=auth(admin_token))
-        assert book["name"] in {b["name"] for b in r.json()["books"]}
+        r = await client.get("/api/v1/admin/book-list", headers=auth(admin_token))
+        assert book["name"] in {b["name"] for b in r.json()}
 
     finally:
         r = await client.delete(

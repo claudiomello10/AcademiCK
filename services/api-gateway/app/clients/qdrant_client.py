@@ -6,7 +6,7 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
-    Filter, FieldCondition, MatchValue,
+    Filter, FieldCondition, MatchAny, MatchValue,
     SparseVector,
     VectorParams, Distance, SparseVectorParams, SparseIndexParams,
     models
@@ -61,12 +61,25 @@ class QdrantManager:
         logger.info(f"Collection '{self.collection}' created successfully")
 
     @staticmethod
-    def _build_book_filter(book_filter: Optional[str]) -> Optional[Filter]:
-        if not book_filter:
-            return None
-        return Filter(
-            must=[FieldCondition(key="book_name", match=MatchValue(value=book_filter))]
-        )
+    def _build_book_filter(
+        book_filter: Optional[str],
+        allowed_books: Optional[List[str]] = None,
+    ) -> Optional[Filter]:
+        """Combine the server-side allowlist with an optional single-book filter.
+
+        The allowlist is a must-condition, so a book_filter outside it
+        intersects to an empty result — client input can never widen scope.
+        """
+        must = []
+        if allowed_books is not None:
+            must.append(
+                FieldCondition(key="book_name", match=MatchAny(any=allowed_books))
+            )
+        if book_filter:
+            must.append(
+                FieldCondition(key="book_name", match=MatchValue(value=book_filter))
+            )
+        return Filter(must=must) if must else None
 
     @staticmethod
     def _format_point(point, score: float) -> Dict[str, Any]:
@@ -104,6 +117,7 @@ class QdrantManager:
         sparse_vector: Optional[Dict[int, float]] = None,
         limit: int = 10,
         book_filter: Optional[str] = None,
+        allowed_books: Optional[List[str]] = None,
         dense_weight: float = 0.5,
         sparse_weight: float = 0.5,
     ) -> List[Dict[str, Any]]:
@@ -114,7 +128,7 @@ class QdrantManager:
         then combined as dense_weight*dense + sparse_weight*sparse.
         """
         try:
-            query_filter = self._build_book_filter(book_filter)
+            query_filter = self._build_book_filter(book_filter, allowed_books)
             oversample = limit * 3
 
             dense_points = (await self.client.query_points(
@@ -164,7 +178,8 @@ class QdrantManager:
         self,
         vector: List[float],
         limit: int = 10,
-        book_filter: Optional[str] = None
+        book_filter: Optional[str] = None,
+        allowed_books: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         Perform dense-only vector search.
@@ -175,7 +190,7 @@ class QdrantManager:
                 query=vector,
                 using="dense",
                 limit=limit,
-                query_filter=self._build_book_filter(book_filter),
+                query_filter=self._build_book_filter(book_filter, allowed_books),
                 with_payload=True
             )).points
             return [self._format_point(point, point.score) for point in results]

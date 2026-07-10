@@ -194,6 +194,59 @@ async def remove_student(conn, class_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="Student is not enrolled in this class")
 
 
+async def list_class_books(conn, class_id: str) -> list[dict]:
+    rows = await conn.fetch(
+        """
+        SELECT b.id, b.name, b.processing_status, b.total_chunks, b.owner_user_id,
+               cb.created_at AS attached_at
+        FROM class_books cb
+        JOIN books b ON b.id = cb.book_id
+        WHERE cb.class_id = $1
+        ORDER BY b.name
+        """,
+        UUID(class_id),
+    )
+    return [
+        {
+            "id": str(r["id"]),
+            "name": r["name"],
+            "processing_status": r["processing_status"],
+            "total_chunks": r["total_chunks"],
+            "owner_user_id": str(r["owner_user_id"]) if r["owner_user_id"] else None,
+            "attached_at": r["attached_at"].isoformat(),
+        }
+        for r in rows
+    ]
+
+
+async def attach_book(conn, class_id: str, book_id: str, added_by: str) -> dict:
+    """Attach a book to a class (idempotent). 404 for unknown books."""
+    book = await conn.fetchrow(
+        "SELECT id, name FROM books WHERE id = $1", UUID(book_id)
+    )
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    await conn.execute(
+        """
+        INSERT INTO class_books (class_id, book_id, added_by)
+        VALUES ($1, $2, $3)
+        ON CONFLICT DO NOTHING
+        """,
+        UUID(class_id), UUID(book_id), UUID(added_by),
+    )
+    return {"id": str(book["id"]), "name": book["name"]}
+
+
+async def detach_book(conn, class_id: str, book_id: str) -> None:
+    deleted = await conn.execute(
+        "DELETE FROM class_books WHERE class_id = $1 AND book_id = $2",
+        UUID(class_id), UUID(book_id),
+    )
+    if deleted == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Book is not attached to this class")
+
+
 async def get_allowed_book_names(db_pool, class_id: str) -> list[str]:
     """Names of the class's completed books — the retrieval allowlist."""
     async with db_pool.acquire() as conn:

@@ -6,6 +6,7 @@ import logging
 
 from app.dependencies import get_current_session
 from app.models.schemas import BookInfo, BookListResponse, ChapterInfo
+from app.routers.chat import resolve_class_scope
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -13,10 +14,15 @@ logger = logging.getLogger(__name__)
 
 @router.get("/books", response_model=BookListResponse)
 async def list_books(request: Request, session: dict = Depends(get_current_session)):
-    """Get list of available books and their chapters from Qdrant."""
+    """Books of the session's active class, with chapters from Qdrant."""
+    _, allowed_books = await resolve_class_scope(request, session)
+    allowed = set(allowed_books)
     try:
         # Get books with chapters from Qdrant
-        books_data = await request.app.state.qdrant.get_books_with_chapters()
+        books_data = [
+            b for b in await request.app.state.qdrant.get_books_with_chapters()
+            if b["name"] in allowed
+        ]
 
         books = []
         total_chunks = 0
@@ -97,22 +103,6 @@ async def get_book(request: Request, book_id: str, session: dict = Depends(get_c
 
 @router.get("/books/names/list")
 async def list_book_names(request: Request, session: dict = Depends(get_current_session)):
-    """Get simple list of book names for filtering."""
-    try:
-        # Try to get from Qdrant first (faster)
-        books = await request.app.state.qdrant.get_books()
-
-        if books:
-            return {"books": books}
-
-        # Fallback to database
-        async with request.app.state.db_pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT name FROM books
-                WHERE processing_status = 'completed'
-                ORDER BY name
-            """)
-            return {"books": [row["name"] for row in rows]}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Names of the active class's books, for filtering."""
+    _, allowed_books = await resolve_class_scope(request, session)
+    return {"books": allowed_books}

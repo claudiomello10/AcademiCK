@@ -55,6 +55,7 @@ class SearchService:
         intent: str = "question_answering",
         top_k: int = 6,
         book_filter: Optional[str] = None,
+        allowed_books: Optional[List[str]] = None,
         use_cache: bool = True
     ) -> List[Dict[str, Any]]:
         """
@@ -65,12 +66,18 @@ class SearchService:
             intent: Query intent for weight selection
             top_k: Number of results to return
             book_filter: Optional book name to filter by
+            allowed_books: Server-side allowlist (class scope); None = unscoped
             use_cache: Whether to use Redis cache
 
         Returns:
             List of search results with scores
         """
-        filters = {"book": book_filter, "intent": intent, "top_k": top_k}
+        filters = {
+            "book": book_filter,
+            "intent": intent,
+            "top_k": top_k,
+            "allowed_books": sorted(allowed_books) if allowed_books is not None else None,
+        }
 
         # Check cache
         if use_cache:
@@ -106,6 +113,7 @@ class SearchService:
                 sparse_vector=sparse_dict,
                 limit=top_k,
                 book_filter=book_filter,
+                allowed_books=allowed_books,
                 dense_weight=dense_weight,
                 sparse_weight=sparse_weight,
             )
@@ -126,7 +134,8 @@ class SearchService:
             return await self.qdrant.search_dense(
                 vector=dense_vector,
                 limit=top_k,
-                book_filter=book_filter
+                book_filter=book_filter,
+                allowed_books=allowed_books
             )
 
     async def _search_with_embedding(
@@ -137,6 +146,7 @@ class SearchService:
         intent: str,
         top_k: int,
         book_filter: Optional[str],
+        allowed_books: Optional[List[str]] = None,
         use_cache: bool = True
     ) -> List[Dict[str, Any]]:
         """
@@ -149,12 +159,18 @@ class SearchService:
             intent: Query intent
             top_k: Number of results
             book_filter: Optional book filter
+            allowed_books: Server-side allowlist (class scope); None = unscoped
             use_cache: Whether to use cache
 
         Returns:
             List of search results
         """
-        filters = {"book": book_filter, "intent": intent, "top_k": top_k}
+        filters = {
+            "book": book_filter,
+            "intent": intent,
+            "top_k": top_k,
+            "allowed_books": sorted(allowed_books) if allowed_books is not None else None,
+        }
 
         # Check cache
         if use_cache:
@@ -172,6 +188,7 @@ class SearchService:
                 sparse_vector=sparse_dict,
                 limit=top_k,
                 book_filter=book_filter,
+                allowed_books=allowed_books,
                 dense_weight=dense_weight,
                 sparse_weight=sparse_weight,
             )
@@ -193,14 +210,16 @@ class SearchService:
             return await self.qdrant.search_dense(
                 vector=dense_vector,
                 limit=top_k,
-                book_filter=book_filter
+                book_filter=book_filter,
+                allowed_books=allowed_books
             )
 
     async def search_with_enhanced_queries(
         self,
         queries: List[Dict[str, Any]],
         intent: str,
-        top_k: int = 6
+        top_k: int = 6,
+        allowed_books: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         Search with multiple enhanced queries concurrently and deduplicate results.
@@ -250,7 +269,8 @@ class SearchService:
                     sparse_dict=sparse_dict,
                     intent=intent,
                     top_k=top_k,
-                    book_filter=q.get("book")
+                    book_filter=q.get("book"),
+                    allowed_books=allowed_books
                 )
             )
 

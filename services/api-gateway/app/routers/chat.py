@@ -15,9 +15,24 @@ from app.models.schemas import (
     ConversationHistory, MessageHistory
 )
 from app.config import settings
+from app.services import class_service
 from app.services.rag_orchestrator import RAGOrchestrator
 from app.services.reasoning_agent import CurationTimeoutError
 from app.services.session_service import ConversationFullError
+
+
+async def resolve_class_scope(request: Request, session: dict) -> tuple[str, List[str]]:
+    """The session's active class and its book allowlist; 409 without a class."""
+    class_id = session.get("active_class_id")
+    if not class_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "no_active_class", "message": "Selecione uma turma antes de conversar."},
+        )
+    allowed_books = await class_service.get_allowed_book_names(
+        request.app.state.db_pool, class_id
+    )
+    return class_id, allowed_books
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -161,6 +176,7 @@ async def chat(
       - error:  any failure; no messages are persisted in this case.
     """
     session_id = session["session_id"]
+    class_id, allowed_books = await resolve_class_scope(request, session)
 
     orchestrator = RAGOrchestrator(
         intent_client=request.app.state.intent_client,
@@ -186,6 +202,7 @@ async def chat(
                     subject=session.get("subject", settings.default_subject),
                     conversation_history=messages,
                     model=chat_request.model,
+                    allowed_books=allowed_books,
                     progress=progress,
                 )
 
@@ -271,6 +288,7 @@ async def chat_single(
     Useful for one-off questions.
     """
     session_id = session["session_id"]
+    class_id, allowed_books = await resolve_class_scope(request, session)
 
     # Create RAG orchestrator
     orchestrator = RAGOrchestrator(
@@ -285,7 +303,8 @@ async def chat_single(
         result = await orchestrator.process_single_query(
             query=chat_request.query,
             subject=session.get("subject", settings.default_subject),
-            model=chat_request.model
+            model=chat_request.model,
+            allowed_books=allowed_books
         )
     except CurationTimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))
@@ -363,16 +382,20 @@ async def clear_chat_history(
 @router.get("/conversations", response_model=ConversationListResponse)
 async def list_conversations(
     request: Request,
+    class_id: Optional[str] = None,
     session: dict = Depends(get_current_session)
 ):
     """
     List all conversations for the authenticated user.
 
-    Returns conversations sorted by most recently updated.
+    Returns conversations sorted by most recently updated,
+    optionally scoped to one class.
     """
     user_id = session.get("user_id")
 
-    conversations = await request.app.state.session_service.get_user_conversations(user_id)
+    conversations = await request.app.state.session_service.get_user_conversations(
+        user_id, class_id=class_id
+    )
 
     return ConversationListResponse(
         conversations=[

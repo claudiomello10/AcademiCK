@@ -83,6 +83,11 @@ NO_CONTEXT_MESSAGE = (
     "sobre outro tópico."
 )
 
+NO_CLASS_BOOKS_MESSAGE = (
+    "Esta turma ainda não tem livros disponíveis. Peça ao professor para "
+    "adicionar o material da turma."
+)
+
 
 class RAGOrchestrator:
     """Orchestrates the RAG pipeline for answering queries."""
@@ -139,9 +144,14 @@ class RAGOrchestrator:
         subject: str = settings.default_subject,
         conversation_history: Optional[List[Dict]] = None,
         model: Optional[str] = None,
+        allowed_books: Optional[List[str]] = None,
         progress: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
         """Process a user query through the RAG pipeline.
+
+        `allowed_books` is the class scope: every retrieval path (agent tools,
+        Qdrant filters) is restricted to these books. None means unscoped;
+        an empty list short-circuits with a fixed message.
 
         If `progress` is provided, the orchestrator awaits it at each
         pipeline boundary with small dict events of the form
@@ -150,6 +160,29 @@ class RAGOrchestrator:
         """
         emit = progress or _noop_progress
         start_time = time.time()
+
+        if allowed_books is not None and not allowed_books:
+            # The class has no completed books yet — nothing to retrieve from.
+            await emit({"type": "token", "text": NO_CLASS_BOOKS_MESSAGE})
+            return {
+                "response": NO_CLASS_BOOKS_MESSAGE,
+                "tokens_used": None,
+                "intent": "question_answering",
+                "resolved_query": query,
+                "sources": [],
+                "search_results": [],
+                "model_used": model or settings.default_model_frontend,
+                "processing_time_ms": (time.time() - start_time) * 1000,
+                "agent_actions": 0,
+                "agent_tool_calls": {},
+                "agent_pool_chunks": 0,
+                "agent_dropped_chunks": 0,
+                "agent_final_chunks": 0,
+                "agent_not_in_kb": True,
+                "agent_tokens": 0,
+                "agent_time_ms": 0.0,
+                "reasoning_trace": ["Class has no books — short-circuited."],
+            }
 
         # Step 1+2: intent classification and query resolution run concurrently.
         await emit({"type": "status", "stage": "intent", "label": STAGE_LABELS["intent"]})
@@ -182,6 +215,7 @@ class RAGOrchestrator:
             subject=subject,
             initial_chunks=[],
             top_k=top_k,
+            allowed_books=allowed_books,
             progress=emit,
         )
         curated_chunks = agent_result.final_chunks
@@ -269,6 +303,7 @@ class RAGOrchestrator:
             "response": response,
             "tokens_used": tokens_used,
             "intent": intent,
+            "resolved_query": resolved_query,
             "sources": [
                 {
                     "text": chunk["text"][:500] + "..." if len(chunk["text"]) > 500 else chunk["text"],
@@ -301,7 +336,8 @@ class RAGOrchestrator:
         self,
         query: str,
         subject: str = settings.default_subject,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        allowed_books: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Process a single query without conversation history.
@@ -312,5 +348,6 @@ class RAGOrchestrator:
             query=query,
             subject=subject,
             conversation_history=None,
-            model=model
+            model=model,
+            allowed_books=allowed_books
         )
