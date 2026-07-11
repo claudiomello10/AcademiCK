@@ -47,6 +47,13 @@ interface Conversation {
     updated_at: string | null;
 }
 
+interface ClassInfo {
+    id: string;
+    name: string;
+    subject: string;
+    professor_username?: string;
+}
+
 // Per-stage progress event coming over SSE from the backend.
 // Labels are produced by the backend so copy can change server-side.
 interface Stage {
@@ -241,6 +248,106 @@ interface LoginFormProps {
     error: string | null;
 }
 
+interface ClassSelectorProps {
+    classes: ClassInfo[];
+    joinCodeEnabled: boolean;
+    joining: boolean;
+    error: string | null;
+    username: string;
+    onSelect: (cls: ClassInfo) => void;
+    onJoin: (code: string) => void;
+    onLogout: () => void;
+}
+
+// Full-screen class picker shown after login. Chat is always scoped to a
+// class, so nothing else renders until one is selected.
+const ClassSelector = ({
+    classes, joinCodeEnabled, joining, error, username, onSelect, onJoin, onLogout,
+}: ClassSelectorProps) => {
+    const [code, setCode] = useState('');
+    return (
+        <Card className="w-full max-w-lg mx-auto mt-20 rounded-2xl shadow-lg border border-primary/30">
+            <CardHeader className="flex flex-col items-center space-y-2">
+                <Image
+                    src="/app_icon.png"
+                    alt="AcademiCK"
+                    width={160}
+                    height={0}
+                    style={{ height: 'auto' }}
+                />
+                <CardTitle className="text-primary text-lg">Escolha sua turma</CardTitle>
+                <CardDescription className="text-center">
+                    Olá, {username}! Selecione a turma para estudar.
+                </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                {classes.length === 0 ? (
+                    <div className="text-center py-6 text-muted-foreground">
+                        Você ainda não está matriculado em nenhuma turma.
+                        {joinCodeEnabled && ' Use o código fornecido pelo professor abaixo.'}
+                    </div>
+                ) : (
+                    <div className="space-y-2">
+                        {classes.map(cls => (
+                            <button
+                                key={cls.id}
+                                onClick={() => onSelect(cls)}
+                                className="w-full text-left p-4 rounded-xl border border-primary/30 hover:border-primary hover:bg-primary/10 transition-colors"
+                            >
+                                <p className="font-medium text-primary">{cls.name}</p>
+                                <p className="text-sm text-muted-foreground">
+                                    {cls.subject}
+                                    {cls.professor_username && ` · Prof. ${cls.professor_username}`}
+                                </p>
+                            </button>
+                        ))}
+                    </div>
+                )}
+
+                {joinCodeEnabled && (
+                    <div className="pt-4 border-t border-border space-y-2">
+                        <p className="text-sm text-muted-foreground">Entrar em uma turma com código:</p>
+                        <div className="flex gap-2">
+                            <Input
+                                value={code}
+                                onChange={e => setCode(e.target.value.toUpperCase())}
+                                placeholder="CÓDIGO"
+                                maxLength={16}
+                                className="rounded-xl h-10 font-mono tracking-widest text-primary"
+                                onKeyDown={e => e.key === 'Enter' && code.trim() && onJoin(code.trim())}
+                            />
+                            <Button
+                                className="rounded-xl bg-primary text-primary-foreground h-10"
+                                onClick={() => onJoin(code.trim())}
+                                disabled={joining || !code.trim()}
+                            >
+                                {joining ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Entrar'}
+                            </Button>
+                        </div>
+                    </div>
+                )}
+
+                {error && (
+                    <Alert variant="destructive" className="rounded-xl">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertTitle>Erro</AlertTitle>
+                        <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                )}
+
+                <Button
+                    variant="outline"
+                    onClick={onLogout}
+                    className="w-full rounded-xl hover:bg-red-50"
+                >
+                    <LogOut className="h-4 w-4 text-red-500 mr-2" />
+                    <span className="text-red-500">Sair</span>
+                </Button>
+            </CardContent>
+        </Card>
+    );
+};
+
 const LoginForm = ({ onLogin, isLoading, error }: LoginFormProps) => (
     <Card className="w-full max-w-md mx-auto mt-20 rounded-2xl shadow-lg border border-primary/30">
         <CardHeader className="flex flex-col items-center space-y-4">
@@ -310,8 +417,14 @@ const StudentHelper = () => {
     // null = still loading; [] paired with modelsError = failed to load.
     const [availableModels, setAvailableModels] = useState<ModelOption[] | null>(null);
     const [modelsError, setModelsError] = useState<string | null>(null);
-    const [subject, setSubject] = useState(process.env.NEXT_PUBLIC_DEFAULT_SUBJECT || 'Machine Learning');
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+    // Class scoping: chat only works inside a selected class.
+    const [myClasses, setMyClasses] = useState<ClassInfo[]>([]);
+    const [activeClass, setActiveClass] = useState<ClassInfo | null>(null);
+    const [joinCodeEnabled, setJoinCodeEnabled] = useState(true);
+    const [joining, setJoining] = useState(false);
+    const [classError, setClassError] = useState<string | null>(null);
 
     // New state variables for book selection
     const [books, setBooks] = useState<BookChapter[]>([]);
@@ -360,9 +473,7 @@ const StudentHelper = () => {
                         if (data.conversation_id) {
                             setCurrentConversationId(data.conversation_id);
                         }
-                        loadChatHistory(savedSession);
-                        loadBooks(savedSession); // Load books when session is valid
-                        loadConversations(savedSession); // Load conversation history
+                        initClassContext(savedSession);
                     } else {
                         handleLogout();
                         setError('Sessão expirada. Por favor, faça login novamente.');
@@ -374,6 +485,90 @@ const StudentHelper = () => {
                 });
         }
     }, []);
+
+    // Fetch enrolled classes + feature flags; re-select the stored class if
+    // it's still valid, otherwise the class selector screen takes over.
+    const initClassContext = async (sid: string) => {
+        try {
+            const [classesRes, featuresRes] = await Promise.all([
+                fetch(`${API_BASE_URL}${API_ENDPOINTS.myClasses}`, { headers: authHeaders(sid) }),
+                fetch(`${API_BASE_URL}${API_ENDPOINTS.studentFeatures}`, { headers: authHeaders(sid) }),
+            ]);
+            const classes: ClassInfo[] = classesRes.ok ? (await classesRes.json()).classes : [];
+            setMyClasses(classes);
+            if (featuresRes.ok) {
+                setJoinCodeEnabled((await featuresRes.json()).join_code_enabled !== false);
+            }
+
+            const storedId = localStorage.getItem('activeClassId');
+            const stored = classes.find(c => c.id === storedId);
+            if (stored) {
+                await selectClass(stored, sid);
+            }
+        } catch (err) {
+            console.error('Error loading classes:', err);
+        }
+    };
+
+    // Scope the session to a class and (re)load everything class-dependent.
+    const selectClass = async (cls: ClassInfo, sid?: string) => {
+        const sessionToken = sid || sessionId;
+        if (!sessionToken) return;
+        setClassError(null);
+        try {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.sessionClass}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders(sessionToken) },
+                body: JSON.stringify({ class_id: cls.id }),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                setClassError(typeof data.detail === 'string' ? data.detail : 'Falha ao selecionar turma');
+                return;
+            }
+            localStorage.setItem('activeClassId', cls.id);
+            setActiveClass(cls);
+            if (data.conversation_id) setCurrentConversationId(data.conversation_id);
+            loadChatHistory(sessionToken);
+            loadBooks(sessionToken);
+            loadConversations(sessionToken, cls.id);
+        } catch {
+            setClassError('Erro ao selecionar turma');
+        }
+    };
+
+    const joinClassByCode = async (code: string) => {
+        if (!sessionId) return;
+        setJoining(true);
+        setClassError(null);
+        try {
+            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.joinClass}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders(sessionId) },
+                body: JSON.stringify({ join_code: code }),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                setClassError(typeof data.detail === 'string' ? data.detail : 'Código inválido');
+                return;
+            }
+            const cls: ClassInfo = { id: data.class_id, name: data.name, subject: data.subject };
+            setMyClasses(prev => [...prev, cls]);
+            await selectClass(cls);
+        } catch {
+            setClassError('Erro ao entrar na turma');
+        } finally {
+            setJoining(false);
+        }
+    };
+
+    // Back to the selector; retrieval scope changes only on the next selection.
+    const changeClass = () => {
+        setActiveClass(null);
+        setConversation([]);
+        localStorage.removeItem('activeClassId');
+        if (sessionId) initClassContext(sessionId);
+    };
 
     // New function to load books
     const loadBooks = async (sid: string) => {
@@ -393,10 +588,14 @@ const StudentHelper = () => {
         }
     };
 
-    // Load user's conversation history
-    const loadConversations = async (sid: string) => {
+    // Load user's conversation history, scoped to the active class
+    const loadConversations = async (sid: string, classId?: string) => {
         try {
-            const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.conversations}`, { headers: authHeaders(sid) });
+            const scope = classId || localStorage.getItem('activeClassId');
+            const url = scope
+                ? `${API_BASE_URL}${API_ENDPOINTS.conversations}?class_id=${scope}`
+                : `${API_BASE_URL}${API_ENDPOINTS.conversations}`;
+            const response = await fetch(url, { headers: authHeaders(sid) });
             if (response.ok) {
                 const data = await response.json();
                 setConversations(data.conversations || []);
@@ -597,16 +796,6 @@ const StudentHelper = () => {
                 localStorage.setItem('session', data.session_id);
                 localStorage.setItem('username', data.username);
 
-                // Set subject for the session
-                await fetch(`${API_BASE_URL}${API_ENDPOINTS.setSubject}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...authHeaders(data.session_id)
-                    },
-                    body: JSON.stringify({ subject })
-                });
-
                 // Fetch conversation_id from session validation
                 const validateRes = await fetch(`${API_BASE_URL}${API_ENDPOINTS.validateSession}`, { headers: authHeaders(data.session_id) });
                 const validateData = await validateRes.json();
@@ -614,9 +803,7 @@ const StudentHelper = () => {
                     setCurrentConversationId(validateData.conversation_id);
                 }
 
-                loadChatHistory(data.session_id);
-                loadBooks(data.session_id); // Load books after successful login
-                loadConversations(data.session_id); // Load conversation history
+                await initClassContext(data.session_id);
             } else {
                 throw new Error(data.detail || 'Credenciais inválidas');
             }
@@ -631,14 +818,16 @@ const StudentHelper = () => {
         setSessionId(null);
         setUsername(null);
         setConversation([]);
+        setActiveClass(null);
+        setMyClasses([]);
         localStorage.removeItem('session');
         localStorage.removeItem('username');
+        localStorage.removeItem('activeClassId');
     };
 
     interface GenerateResponseBody {
         query: string;
         model: string;
-        subject: string; // Add subject to the request body
     }
 
     interface DoneEventPayload {
@@ -921,7 +1110,6 @@ const StudentHelper = () => {
                 body: JSON.stringify({
                     query: userQuery,
                     model,
-                    subject,
                 } as GenerateResponseBody),
             });
 
@@ -929,6 +1117,12 @@ const StudentHelper = () => {
                 let detail = 'Falha ao obter resposta';
                 try {
                     const errorBody = await response.json();
+                    if (errorBody?.detail?.code === 'no_active_class') {
+                        // Session lost its class scope — back to the selector.
+                        rollbackOnError(String(errorBody.detail.message || 'Selecione uma turma.'));
+                        changeClass();
+                        return;
+                    }
                     if (errorBody?.detail) detail = String(errorBody.detail);
                 } catch { /* response wasn't JSON */ }
                 rollbackOnError(detail);
@@ -991,25 +1185,6 @@ const StudentHelper = () => {
             setIsLoading(false);
             setStages([]);
             setStreamingText('');
-        }
-    };
-
-    // Update the subject when changed
-    const handleSubjectChange = async (newSubject: string) => {
-        setSubject(newSubject);
-        if (sessionId) {
-            try {
-                await fetch(`${API_BASE_URL}${API_ENDPOINTS.setSubject}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...authHeaders(sessionId)
-                    },
-                    body: JSON.stringify({ subject: newSubject })
-                });
-            } catch (err) {
-                console.error("Failed to update subject:", err);
-            }
         }
     };
 
@@ -1152,6 +1327,21 @@ const StudentHelper = () => {
         return <LoginForm onLogin={handleLogin} isLoading={isLoading} error={error} />;
     }
 
+    if (!activeClass) {
+        return (
+            <ClassSelector
+                classes={myClasses}
+                joinCodeEnabled={joinCodeEnabled}
+                joining={joining}
+                error={classError}
+                username={username}
+                onSelect={(cls) => selectClass(cls)}
+                onJoin={joinClassByCode}
+                onLogout={handleLogout}
+            />
+        );
+    }
+
     return (
         <div className="w-full h-screen max-w-6xl mx-auto flex flex-col">
             {/* Conversation history sidebar */}
@@ -1170,15 +1360,20 @@ const StudentHelper = () => {
                             <span className="text-xs text-muted-foreground mt-1">
                                 Desenvolvido por Cláudio Klautau Mello
                             </span>
-                            <div className="flex items-center gap-2 mt-2">
-                                <span className="text-sm text-muted-foreground">Assunto:</span>
-                                <Input
-                                    type="text"
-                                    value={subject}
-                                    onChange={(e) => handleSubjectChange(e.target.value)}
-                                    placeholder="Assunto"
-                                    className="rounded-xl h-8 max-w-[180px] text-sm bg-secondary"
-                                />
+                            <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                <span className="text-sm text-muted-foreground">Turma:</span>
+                                <span className="text-sm font-medium text-primary">
+                                    {activeClass.name} · {activeClass.subject}
+                                </span>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={changeClass}
+                                    className="h-7 rounded-lg text-xs text-muted-foreground hover:text-primary"
+                                >
+                                    <RefreshCw className="h-3 w-3 mr-1" />
+                                    Trocar turma
+                                </Button>
                             </div>
                         </div>
 
