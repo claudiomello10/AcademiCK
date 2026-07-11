@@ -8,13 +8,20 @@ of each chunk, conversation history, and analytics.
 All primary keys are `UUID` (`gen_random_uuid()`). All timestamps are
 `TIMESTAMP WITH TIME ZONE`.
 
+**Upgrading (alpha):** there are no migration scripts. Schema changes land in
+`init-db.sql`, which only runs against a fresh volume — upgrade with a full
+relaunch: `docker compose down -v && docker compose up`.
+
 ## Entity overview
 
 ```
 users ──┬─< sessions ──< conversations ──< messages ──< chunk_retrievals
-        └─< conversations                                      │
-                                                               │
-books ──┬─< chapters ──< chunks <─────────────────────────────┘
+        └─< conversations                        └──< message_topics
+        └─< classes ──┬─< class_members (>── users)
+                      ├─< class_books   (>── books)
+                      └─< class_topics  <── message_topics
+
+books ──┬─< chapters ──< chunks
         ├─< chunks
         └─< processing_jobs
 
@@ -33,9 +40,10 @@ created at startup from environment variables and flagged with `is_config_user`.
 | `username` | varchar(100) | unique, not null |
 | `email` | varchar(255) | unique |
 | `password_hash` | varchar(255) | bcrypt |
-| `role` | varchar(50) | `user` \| `admin` |
+| `role` | varchar(50) | `user` \| `professor` \| `manager` \| `admin` |
 | `status` | varchar(50) | `active` \| `inactive` \| `suspended` |
 | `is_config_user` | bool | true for env-provisioned admin/guest |
+| `registration_number` | varchar(50) | unique when present; mandatory for students (API-enforced) |
 | `created_at` / `updated_at` / `last_active` | timestamptz | `updated_at` maintained by trigger |
 
 Indexes: `username`, `email`, `status`.
@@ -48,7 +56,8 @@ Session metadata persisted for resumption; the live session lives in Redis.
 | `id` | UUID | PK |
 | `user_id` | UUID | FK → `users` (cascade delete) |
 | `session_token` | varchar(255) | unique, not null |
-| `subject` | varchar(255) | default `Machine Learning` |
+| `subject` | varchar(255) | default `Machine Learning`; derived from the active class |
+| `active_class_id` | UUID | FK → `classes` (set null); scopes chat/retrieval, survives Redis TTL |
 | `expires_at` | timestamptz | not null |
 | `is_active` | bool | default true |
 | `created_at` / `last_active` | timestamptz | |
@@ -69,10 +78,11 @@ PDF metadata. One row per ingested book.
 | `processing_status` | varchar(50) | `pending` \| `processing` \| `completed` \| `failed` |
 | `processing_method` | varchar(50) | processor used (e.g. default / docling) |
 | `error_message` | text | |
+| `owner_user_id` | UUID | FK → `users` (set null); NULL = admin/global book, else the uploading professor |
 | `created_at` / `updated_at` / `processed_at` | timestamptz | `updated_at` via trigger |
 | `metadata` | jsonb | default `{}` |
 
-Indexes: `processing_status`, unique on `file_hash` (where not null).
+Indexes: `processing_status`, unique on `file_hash` (where not null), `owner_user_id`.
 
 ### chapters
 Chapter breakdown of a book.
@@ -118,12 +128,90 @@ Groups messages into a resumable thread.
 | `id` | UUID | PK |
 | `session_id` | UUID | FK → `sessions` (set null) |
 | `user_id` | UUID | FK → `users` (cascade) |
-| `subject` | varchar(255) | |
+| `class_id` | UUID | FK → `classes` (set null); the class the conversation happened in |
+| `subject` | varchar(255) | copied from the class at creation |
 | `title` | varchar(255) | |
 | `message_count` | int | default 0 |
 | `created_at` / `updated_at` | timestamptz | `updated_at` via trigger |
 
-Indexes: `session_id`, `user_id`.
+Indexes: `session_id`, `user_id`, `class_id`.
+
+### classes
+A class: one subject taught by one professor to an enrolled group. Students
+can only chat inside a class; its books are the retrieval allowlist.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | PK |
+| `name` | varchar(255) | not null |
+| `subject` | varchar(255) | not null; becomes the session subject |
+| `description` | text | |
+| `professor_id` | UUID | FK → `users` (cascade), not null |
+| `join_code` | varchar(16) | unique; 8-char code students redeem |
+| `join_code_enabled` | bool | default true |
+| `is_active` | bool | default true |
+| `created_at` / `updated_at` | timestamptz | `updated_at` via trigger |
+
+Indexes: `professor_id`, partial on `join_code`.
+
+### class_members
+Student enrollment. `enrolled_via` records which flow enrolled the student.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | PK |
+| `class_id` | UUID | FK → `classes` (cascade) |
+| `user_id` | UUID | FK → `users` (cascade) |
+| `enrolled_via` | varchar(20) | `join_code` \| `professor` \| `admin` |
+| `enrolled_at` | timestamptz | |
+
+Unique on `(class_id, user_id)`. Index: `user_id`.
+
+### class_books
+Books attached to a class — the library students in that class can see and
+query. Completed books only are exposed (filtered in the API).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `class_id` | UUID | FK → `classes` (cascade); part of PK |
+| `book_id` | UUID | FK → `books` (cascade); part of PK |
+| `added_by` | UUID | FK → `users` (set null) |
+| `created_at` | timestamptz | |
+
+Index: `book_id`.
+
+### class_topics
+Per-class topic/subtopic tree (one nesting level, API-enforced). `embedding`
+holds the bge-m3 dense vector of "name — description", computed at edit time
+and compared against each student query.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | PK |
+| `class_id` | UUID | FK → `classes` (cascade) |
+| `parent_topic_id` | UUID | FK → `class_topics` (cascade); NULL = top-level topic |
+| `name` | varchar(255) | not null |
+| `description` | text | improves classification quality |
+| `embedding` | jsonb | 1024-float dense vector |
+| `position` | int | display order |
+| `created_at` / `updated_at` | timestamptz | `updated_at` via trigger |
+
+Unique (`NULLS NOT DISTINCT`) on `(class_id, parent_topic_id, name)`. Index: `class_id`.
+
+### message_topics
+Async query-to-topic assignments (written after the chat response, never on
+the chat path). NULL `topic_id` means the query didn't match any topic above
+the similarity threshold ("unclassified").
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `message_id` | UUID | PK; FK → `messages` (cascade) |
+| `class_id` | UUID | FK → `classes` (cascade) |
+| `topic_id` | UUID | FK → `class_topics` (set null) |
+| `similarity` | float | best cosine similarity found |
+| `created_at` | timestamptz | |
+
+Indexes: `(class_id, created_at)`, `topic_id`.
 
 ### messages
 Chat history with per-message RAG metadata.
