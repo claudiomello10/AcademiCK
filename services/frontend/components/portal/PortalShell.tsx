@@ -71,14 +71,14 @@ const LoginForm = ({
                             placeholder={config.loginLabels.username}
                             required
                             autoFocus
-                            className="rounded-xl h-12 bg-secondary border-border"
+                            className="rounded-xl h-12 bg-secondary text-black border-border"
                         />
                         <Input
                             type="password"
                             name="password"
                             placeholder={config.loginLabels.password}
                             required
-                            className="rounded-xl h-12 bg-secondary border-border"
+                            className="rounded-xl h-12 bg-secondary text-black border-border"
                         />
                     </div>
                     {error && (

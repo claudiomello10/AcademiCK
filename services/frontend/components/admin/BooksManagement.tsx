@@ -175,7 +175,7 @@ const BooksManagement = () => {
                         <ScrollArea className="h-64">
                             <div className="space-y-2">
                                 {files.map((file, index) => (
-                                    <div key={index} className="flex items-center justify-between bg-primary p-3 rounded-lg">
+                                    <div key={index} className="flex items-center justify-between bg-primary text-primary-foreground p-3 rounded-lg">
                                         <div className="flex items-center gap-3">
                                             <FileText className="h-5 w-5" />
                                             <span className="font-medium">{file.name}</span>

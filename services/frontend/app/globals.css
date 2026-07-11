@@ -5,15 +5,15 @@
 @layer base {
   :root {
     --background: 0 0% 7%; /* Dark background */
-    --foreground: 0 0% 0%; /* Light text for dark background */
-    --card: 0 0% 0%; /* Slightly lighter than background for cards */
-    --card-foreground: 0 0% 0%;
+    --foreground: 0 0% 0%; /* Black — used as text on light surfaces (chat bubbles) */
+    --card: 0 0% 0%; /* Black card surface */
+    --card-foreground: 0 0% 95%; /* Light text on the black card */
     --popover: 0 0% 10%;
     --popover-foreground: 0 0% 95%;
     --primary: 99 94% 61%; /* Vibrant green accent */
     --primary-foreground: 0 0% 0%; /* Black text on green */
     --secondary: 0 0% 100%; /* White */
-    --secondary-foreground: 0 0% 95%;
+    --secondary-foreground: 0 0% 9%; /* Near-black text on the white secondary */
     --muted: 0 0% 15%;
     --muted-foreground: 0 0% 70%;
     --accent: 99 94% 61%; /* Green accent */
@@ -57,5 +57,6 @@
   }
   body {
     @apply bg-background text-foreground;
+    color-scheme: dark; /* native controls (date pickers, scrollbars) render dark */
   }
 }

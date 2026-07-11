@@ -331,13 +331,13 @@ const UsersSection = ({ endpoints, assignableRoles, labels }: UsersSectionProps)
                                 {users.map((user) => {
                                     const RoleIcon = ROLE_ICONS[user.role] || Users;
                                     return (
-                                        <div key={user.id} className="p-4 border border-primary/20 rounded-lg bg-secondary hover:bg-secondary/80">
+                                        <div key={user.id} className="p-4 border border-primary/20 rounded-lg bg-secondary text-black hover:bg-secondary/80">
                                             <div className="flex items-center justify-between">
                                                 <div className="flex flex-col min-w-0">
                                                     <div className="flex items-center gap-2">
                                                         <RoleIcon className="h-4 w-4 shrink-0" />
                                                         <span className="font-medium truncate">{user.username}</span>
-                                                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted">
+                                                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-secondary">
                                                             {labels.roleNames[user.role] || user.role}
                                                         </span>
                                                     </div>
@@ -358,7 +358,7 @@ const UsersSection = ({ endpoints, assignableRoles, labels }: UsersSectionProps)
                                                     <Button
                                                         variant="ghost"
                                                         size="sm"
-                                                        className="h-8 w-8 p-0"
+                                                        className="h-8 w-8 p-0 text-black"
                                                         onClick={() => {
                                                             setSelectedUser(user);
                                                             setUserForm({

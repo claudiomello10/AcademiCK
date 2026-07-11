@@ -1445,7 +1445,7 @@ const StudentHelper = () => {
                                     onKeyDown={handleInputKeyDown}
                                     placeholder="Faça uma pergunta... (use @ para mencionar um livro)"
                                     disabled={isLoading}
-                                    className="w-full rounded-xl p-3 resize-none border border-border bg-secondary focus:ring-0 focus:outline-none focus:border-primary"
+                                    className="w-full rounded-xl p-3 resize-none border border-border bg-secondary text-black focus:ring-0 focus:outline-none focus:border-primary"
                                     style={{
                                         height: '96px',
                                         minHeight: '96px',
